@@ -31,6 +31,8 @@ object PasswordTargetAccessGrant {
     private const val EVENT_LOOKBACK_MILLIS = 30_000L
     private const val WEBSITE_GRANT_TIMEOUT_MILLIS = 5 * 60_000L
     private const val INTERNAL_ACTIVITY_HANDOFF_WINDOW_MILLIS = 2_000L
+    private const val POST_EXIT_ECHO_SUPPRESSION_MILLIS = 4_000L
+    private const val POST_EXIT_USAGE_LOOKBACK_MILLIS = 1_500L
 
     internal data class AppVisitObservation(
         val latestForegroundPackage: String?,
@@ -43,9 +45,16 @@ object PasswordTargetAccessGrant {
         val latestTargetStoppedClassName: String? = null
     )
 
+    private data class RecentAppExit(
+        val markedAtElapsedMillis: Long,
+        val queryFromWallClockMillis: Long,
+        val lastKnownForegroundPackage: String?
+    )
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val grantedPackages = ConcurrentHashMap.newKeySet<String>()
     private val appMonitorJobs = ConcurrentHashMap<String, Job>()
+    private val recentAppExits = ConcurrentHashMap<String, RecentAppExit>()
     private val websiteExpiryElapsed = ConcurrentHashMap<String, Long>()
     private val websiteMonitorJobs = ConcurrentHashMap<String, Job>()
     @Volatile private var applicationContext: Context? = null
@@ -54,6 +63,7 @@ object PasswordTargetAccessGrant {
         val target = packageName.takeIf(String::isNotBlank) ?: return
         val appContext = context.applicationContext
         applicationContext = appContext
+        recentAppExits.remove(target)
         grantedPackages.add(target)
         appMonitorJobs.remove(target)?.cancel()
 
@@ -70,8 +80,46 @@ object PasswordTargetAccessGrant {
     fun isPackageGranted(packageName: String): Boolean =
         packageName.isNotBlank() && packageName in grantedPackages
 
+    /**
+     * Accessibility can deliver a final TYPE_WINDOWS_CHANGED event for the app
+     * that just went to background after Home, an Android chooser, or another app
+     * already owns the foreground. The one-visit grant must end at that boundary,
+     * but that stale exit echo must not be mistaken for a brand-new app entry.
+     *
+     * This guard exists only for packages whose authenticated visit was actually
+     * observed leaving the foreground. A real re-entry is never suppressed: the
+     * latest UsageEvents foreground owner is checked again and the guard is removed
+     * as soon as the protected package itself is foreground.
+     */
+    fun shouldSuppressPostExitWindow(packageName: String): Boolean {
+        val target = packageName.takeIf(String::isNotBlank) ?: return false
+        val recentExit = recentAppExits[target] ?: return false
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val elapsedSinceExit = nowElapsed - recentExit.markedAtElapsedMillis
+        if (elapsedSinceExit < 0L || elapsedSinceExit > POST_EXIT_ECHO_SUPPRESSION_MILLIS) {
+            recentAppExits.remove(target, recentExit)
+            return false
+        }
+
+        val observedForegroundPackage = observeForegroundAfterExit(target, recentExit)
+            ?: recentExit.lastKnownForegroundPackage
+        val suppress = shouldSuppressPostExitEcho(
+            target = target,
+            observedForegroundPackage = observedForegroundPackage,
+            elapsedSinceExitMillis = elapsedSinceExit
+        )
+
+        // Once UsageEvents confirms that the protected target is foreground again,
+        // this is a genuine new visit and must be intercepted immediately.
+        if (!suppress && observedForegroundPackage == target) {
+            recentAppExits.remove(target, recentExit)
+        }
+        return suppress
+    }
+
     fun revokePackage(packageName: String?) {
         val target = packageName?.takeIf(String::isNotBlank) ?: return
+        recentAppExits.remove(target)
         grantedPackages.remove(target)
         appMonitorJobs.remove(target)?.cancel()
         reconcileProtection()
@@ -137,6 +185,7 @@ object PasswordTargetAccessGrant {
         grantedPackages.clear()
         appMonitorJobs.values.forEach(Job::cancel)
         appMonitorJobs.clear()
+        recentAppExits.clear()
         websiteExpiryElapsed.clear()
         websiteMonitorJobs.values.forEach(Job::cancel)
         websiteMonitorJobs.clear()
@@ -144,6 +193,21 @@ object PasswordTargetAccessGrant {
 
     internal fun grantedWebsiteRulesSnapshot(): Set<String> =
         websiteExpiryElapsed.keys.filterTo(linkedSetOf(), ::isWebsiteRuleGranted)
+
+    internal fun shouldSuppressPostExitEcho(
+        target: String,
+        observedForegroundPackage: String?,
+        elapsedSinceExitMillis: Long
+    ): Boolean {
+        if (target.isBlank() ||
+            elapsedSinceExitMillis < 0L ||
+            elapsedSinceExitMillis > POST_EXIT_ECHO_SUPPRESSION_MILLIS
+        ) {
+            return false
+        }
+        return !observedForegroundPackage.isNullOrBlank() &&
+            observedForegroundPackage != target
+    }
 
     /**
      * Pure one-visit policy used by the monitor and unit tests.
@@ -269,7 +333,10 @@ object PasswordTargetAccessGrant {
                         observation = observation
                     )
                 ) {
-                    revokePackageWithoutCancellingSelf(target)
+                    revokePackageWithoutCancellingSelf(
+                        target = target,
+                        exitObservation = observation
+                    )
                     return
                 }
                 delay(APP_POLL_MILLIS)
@@ -351,9 +418,41 @@ object PasswordTargetAccessGrant {
         )
     }
 
-    private fun revokePackageWithoutCancellingSelf(target: String) {
+    private fun observeForegroundAfterExit(
+        target: String,
+        recentExit: RecentAppExit
+    ): String? {
+        val context = applicationContext ?: return null
+        val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+            ?: return null
+        return runCatching {
+            observeAppVisit(
+                manager = usage,
+                target = target,
+                notBeforeMillis = recentExit.queryFromWallClockMillis
+            ).latestForegroundPackage
+        }.getOrNull()
+    }
+
+    private fun revokePackageWithoutCancellingSelf(
+        target: String,
+        exitObservation: AppVisitObservation? = null
+    ) {
         val existed = grantedPackages.remove(target)
-        if (existed) reconcileProtection()
+        if (!existed) return
+
+        if (exitObservation != null) {
+            recentAppExits[target] = RecentAppExit(
+                markedAtElapsedMillis = SystemClock.elapsedRealtime(),
+                queryFromWallClockMillis = (
+                    System.currentTimeMillis() - POST_EXIT_USAGE_LOOKBACK_MILLIS
+                ).coerceAtLeast(0L),
+                lastKnownForegroundPackage = exitObservation.latestForegroundPackage
+            )
+        } else {
+            recentAppExits.remove(target)
+        }
+        reconcileProtection()
     }
 
     private fun reconcileProtection(invalidateWebsitePolicy: Boolean = false) {
