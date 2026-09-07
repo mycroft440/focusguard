@@ -49,9 +49,6 @@ object UsageImpactRouter {
             val mode = limit.lockMode.trim().uppercase()
             if (mode == "PASSWORD" || mode == "WARNING") return@withContext false
 
-            // HARD_BLOCK_NO_PASSWORD is an immediate timed usage-limit block.
-            // While its absolute deadline is active, every attempt opens impact
-            // metrics anchored at the real createdAt of this configuration.
             if (mode == "TIME") {
                 val lockUntil = limit.lockUntilTimestamp ?: return@withContext false
                 val blocked = lockUntil > now
@@ -59,9 +56,6 @@ object UsageImpactRouter {
                 return@withContext blocked
             }
 
-            // For ordinary usage limits the intervention appears only after usage
-            // accumulated after activation really reaches the allowance. Usage from
-            // before activation on the same day stays outside the new allowance.
             val manager = appContext.getSystemService(Context.USAGE_STATS_SERVICE)
                 as? UsageStatsManager ?: return@withContext false
             val startOfDay = Calendar.getInstance().apply {
