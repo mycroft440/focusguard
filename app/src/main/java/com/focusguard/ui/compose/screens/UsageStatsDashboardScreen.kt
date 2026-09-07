@@ -4,18 +4,14 @@ import kotlin.OptIn
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.provider.Settings
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.pluralStringResource
@@ -33,9 +28,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.graphics.drawable.toBitmap
 import com.focusguard.R
 import com.focusguard.analytics.*
+import com.focusguard.ui.compose.components.FocusGuardAppIcon
 import com.focusguard.ui.compose.theme.*
 import com.focusguard.utils.FocusGuardLogger
 import com.focusguard.utils.PermissionUtils
@@ -47,6 +42,7 @@ import java.util.Calendar
 private data class UsageInsightsData(
     val phoneUsage: PhoneUsageInsights,
     val mostUsedApps: List<AppUsageStat>,
+    val mostUsedAverageDays: Int,
     val mostOpenedApps: List<AppAccessStat>,
     val neverUsedApps: List<String>
 )
@@ -63,6 +59,7 @@ fun UsageStatsDashboardScreen(onBack: () -> Unit, showTopBar: Boolean = true) {
         mutableStateOf(PhoneUsageInsights(dailyHistory = emptyList(), periodSummary = null))
     }
     var mostUsedApps by remember { mutableStateOf<List<AppUsageStat>>(emptyList()) }
+    var mostUsedAverageDays by remember { mutableIntStateOf(1) }
     var mostOpenedApps by remember { mutableStateOf<List<AppAccessStat>>(emptyList()) }
     var neverUsedApps by remember { mutableStateOf<List<String>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -99,6 +96,7 @@ fun UsageStatsDashboardScreen(onBack: () -> Unit, showTopBar: Boolean = true) {
         runCancellableInsightsLoad {
             withContext(Dispatchers.IO) {
                 val end = System.currentTimeMillis()
+                val monthPeriod = UsageInsightsPeriodPolicy.currentMonth(end)
                 val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -7) }
                 val start7Days = cal.timeInMillis
 
@@ -112,7 +110,12 @@ fun UsageStatsDashboardScreen(onBack: () -> Unit, showTopBar: Boolean = true) {
 
                 UsageInsightsData(
                     phoneUsage = analytics.getPhoneUsageInsights(),
-                    mostUsedApps = analytics.getMostUsedApps(start7Days, end),
+                    mostUsedApps = MonthlyMostUsedAppsProvider.load(
+                        context = context.applicationContext,
+                        startTime = monthPeriod.startMillis,
+                        endTime = monthPeriod.endMillis
+                    ),
+                    mostUsedAverageDays = monthPeriod.elapsedDays,
                     mostOpenedApps = analytics.getMostOpenedApps(startToday, end),
                     neverUsedApps = analytics.getNeverUsedApps(start7Days, end)
                 )
@@ -121,6 +124,7 @@ fun UsageStatsDashboardScreen(onBack: () -> Unit, showTopBar: Boolean = true) {
             .onSuccess { data ->
                 phoneUsage = data.phoneUsage
                 mostUsedApps = data.mostUsedApps
+                mostUsedAverageDays = data.mostUsedAverageDays
                 mostOpenedApps = data.mostOpenedApps
                 neverUsedApps = data.neverUsedApps
             }
@@ -211,6 +215,7 @@ fun UsageStatsDashboardScreen(onBack: () -> Unit, showTopBar: Boolean = true) {
                             MostUsedAppsSection(
                                 apps = mostUsedApps,
                                 pm = pm,
+                                averageDays = mostUsedAverageDays,
                                 showAverage = showAverageForMostUsed,
                                 onToggleAverage = { showAverageForMostUsed = it }
                             )
@@ -723,6 +728,7 @@ private fun UsagePatternStatement(
 fun MostUsedAppsSection(
     apps: List<AppUsageStat>,
     pm: PackageManager,
+    averageDays: Int = 1,
     showAverage: Boolean,
     onToggleAverage: (Boolean) -> Unit
 ) {
@@ -733,7 +739,7 @@ fun MostUsedAppsSection(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.dashboard_most_used), color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.dashboard_most_used_month), color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.dashboard_daily_avg), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     Switch(checked = showAverage, onCheckedChange = onToggleAverage, modifier = Modifier.scale(0.8f))
@@ -743,12 +749,13 @@ fun MostUsedAppsSection(
             Spacer(Modifier.height(16.dp))
 
             val displayList = apps.take(3)
+            val divisor = averageDays.coerceAtLeast(1).toLong()
 
             if (displayList.isEmpty()) {
                 Text(stringResource(R.string.dashboard_no_data), color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 displayList.forEach { stat ->
-                    val timeToDisplay = if (showAverage) stat.timeSpentMs / 7 else stat.timeSpentMs
+                    val timeToDisplay = if (showAverage) stat.timeSpentMs / divisor else stat.timeSpentMs
                     AppUsageRow(stat.packageName, timeToDisplay, pm)
                     Spacer(Modifier.height(12.dp))
                 }
@@ -851,46 +858,13 @@ fun AppUsageRow(pkg: String, timeMs: Long, pm: PackageManager) {
 
 @Composable
 fun AppIcon(pkg: String, pm: PackageManager, size: Int) {
-    // Carrega o drawable com try/catchThrowable — getApplicationIcon pode lançar
-    // NameNotFoundException (app desinstado entre coleta e renderização).
-    val iconDrawable: Drawable? = try {
-        pm.getApplicationIcon(pkg)
-    } catch (e: Throwable) {
-        null
-    }
-
-    if (iconDrawable != null) {
-        // toBitmap() pode falhar em AdaptiveIconDrawable com intrinsicWidth=-1
-        // em alguns devices/OEMs. runCatching evita crash e cai para o fallback.
-        val bitmap = runCatching {
-            iconDrawable.toBitmap(
-                width = if (iconDrawable.intrinsicWidth > 0) iconDrawable.intrinsicWidth else size,
-                height = if (iconDrawable.intrinsicHeight > 0) iconDrawable.intrinsicHeight else size
-            ).asImageBitmap()
-        }.getOrNull()
-
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = null,
-                modifier = Modifier.size(size.dp).clip(CircleShape)
-            )
-        } else {
-            AppIconFallback(size)
-        }
-    } else {
-        AppIconFallback(size)
-    }
-}
-
-@Composable
-private fun AppIconFallback(size: Int) {
-    Box(
-        modifier = Modifier.size(size.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(Icons.Default.Language, null, tint = AccentCyan, modifier = Modifier.size((size / 2).dp))
-    }
+    FocusGuardAppIcon(
+        packageName = pkg,
+        appName = getAppName(pkg, pm),
+        modifier = Modifier.size(size.dp),
+        cornerRadius = (size / 4).dp,
+        allowRemoteFallback = true
+    )
 }
 
 fun getAppName(pkg: String, pm: PackageManager): String {

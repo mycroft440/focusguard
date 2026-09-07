@@ -2,6 +2,7 @@ package com.focusguard.usage
 
 import android.content.Context
 import com.focusguard.database.AppUsageLimit
+import com.focusguard.database.BlockSession
 
 enum class UsageInterventionType { USAGE_LIMIT, TIME_BLOCK }
 
@@ -30,6 +31,34 @@ object UsageInterventionStore {
             dailyLimitMinutes = limit.dailyLimitMinutes.takeIf { it > 0 }
         )
         if (readApp(context, limit.packageName) != intervention) {
+            write(context, intervention)
+        }
+        return intervention
+    }
+
+    /**
+     * Persists the real start/end window of a TIME block session so the impact
+     * screen can compare equivalent usage windows around the moment the timed
+     * commitment actually started. This keeps TIME-session metrics independent
+     * from the daily-limit table.
+     */
+    @Synchronized
+    fun syncFromTimeSession(
+        context: Context,
+        packageName: String,
+        session: BlockSession
+    ): UsageIntervention {
+        require(session.sessionType.equals("TIME", ignoreCase = true)) {
+            "Only TIME sessions can create a time-block intervention"
+        }
+        val intervention = UsageIntervention(
+            packageName = packageName,
+            type = UsageInterventionType.TIME_BLOCK,
+            startedAt = session.startTime.coerceAtLeast(1L),
+            endsAt = session.endTime,
+            dailyLimitMinutes = null
+        )
+        if (readApp(context, packageName) != intervention) {
             write(context, intervention)
         }
         return intervention

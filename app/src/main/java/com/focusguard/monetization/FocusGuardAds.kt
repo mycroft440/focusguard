@@ -154,6 +154,7 @@ object FocusGuardAds {
         activity: ComponentActivity,
         adView: AdView,
         widthDp: Int,
+        onLoaded: () -> Unit = {},
         onUnavailable: (String) -> Unit = {}
     ) {
         withAdsReady(
@@ -173,6 +174,7 @@ object FocusGuardAds {
                     object : AdLoadCallback<BannerAd> {
                         override fun onAdLoaded(ad: BannerAd) {
                             FocusGuardLogger.log("Ads", "Banner adaptativo de impacto carregado")
+                            onLoaded()
                         }
 
                         override fun onAdFailedToLoad(adError: LoadAdError) {
