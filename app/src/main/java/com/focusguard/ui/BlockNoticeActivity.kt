@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.focusguard.admin.DeviceOwnerManager
 import com.focusguard.manager.BlockingSessionManager
 import com.focusguard.security.AppBlockSurfacePolicy
 import com.focusguard.service.AppBlockSurfaceResolver
@@ -27,6 +28,12 @@ import kotlinx.coroutines.launch
  *
  *  - [PasswordUnlockActivity] for a plain PASSWORD-session app target;
  *  - [GenericBlockNoticeActivity] for every non-password/stronger protection.
+ *
+ * TIME commitments and active usage limits have a second invariant: on a Device
+ * Owner installation their target package is reconciled into Android's suspended
+ * state before the blocking destination is shown. Android then stops its started
+ * Activities and removes it from Recents instead of leaving the intercepted app
+ * alive as a background task. Plain PASSWORD visits deliberately skip that step.
  *
  * Keeping the router UI-free prevents the generic hard-block screen from ever
  * being shown for a password-protected app, even while Room is being queried.
@@ -87,11 +94,11 @@ class BlockNoticeActivity : AppCompatActivity() {
         }
 
         routeJob = lifecycleScope.launch {
-            val surface = try {
+            val resolution = try {
                 AppBlockSurfaceResolver(
                     context = applicationContext,
                     sessionManager = blockingSessionManager
-                ).resolve(
+                ).resolveAttempt(
                     blockedPackage = blockedPackage,
                     strictPomodoroActive = false
                 )
@@ -113,7 +120,51 @@ class BlockNoticeActivity : AppCompatActivity() {
                 return@launch
             }
 
-            launchDestination(sourceIntent, surface, attemptId)
+            if (resolution.closeTargetAfterInterception) {
+                closeTimedOrLimitedTarget(blockedPackage)
+            }
+
+            launchDestination(sourceIntent, resolution.surface, attemptId)
+        }
+    }
+
+    /**
+     * Device Owner is the Android-supported path that can close another package
+     * strongly enough for this requirement. Reusing the normal enforcement pass
+     * is important: it updates FocusGuard's managed-suspension inventory as well
+     * as the actual DPM policy, so the package is also unsuspended correctly when
+     * its TIME/limit protection expires.
+     *
+     * Consumer mode intentionally does not call killBackgroundProcesses: Android
+     * 14+ ignores that API for other packages. The accessibility curtain still
+     * prevents the intercepted target from becoming usable while the block owner
+     * is shown, but process/task termination is not a public consumer-app power.
+     */
+    private suspend fun closeTimedOrLimitedTarget(packageName: String) {
+        val deviceOwnerManager = DeviceOwnerManager.getInstance(applicationContext)
+        if (!deviceOwnerManager.isDeviceOwnerActive()) {
+            FocusGuardLogger.log(
+                "BlockRouter",
+                "TIME/limite interceptou $packageName; fechamento de tarefa do sistema " +
+                    "exige Device Owner"
+            )
+            return
+        }
+
+        if (deviceOwnerManager.isPackageSuspendedByFocusMode(packageName)) return
+
+        blockingSessionManager.checkAndEnforce()
+
+        if (deviceOwnerManager.isPackageSuspendedByFocusMode(packageName)) {
+            FocusGuardLogger.log(
+                "BlockRouter",
+                "TIME/limite suspendeu e fechou $packageName antes da tela de bloqueio"
+            )
+        } else {
+            FocusGuardLogger.log(
+                "BlockRouter",
+                "Android não confirmou suspensão de $packageName após TIME/limite"
+            )
         }
     }
 
