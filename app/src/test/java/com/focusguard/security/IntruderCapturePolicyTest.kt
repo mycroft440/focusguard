@@ -8,16 +8,13 @@ class IntruderCapturePolicyTest {
 
     @Test
     fun `only the blocked app unlock captures`() {
-        // Guards against a new surface silently inheriting the camera.
         val capturing = Surface.entries.filter(IntruderCapturePolicy::capturesOn)
 
         assertThat(capturing).containsExactly(Surface.BLOCKED_APP_UNLOCK)
     }
 
     @Test
-    fun `captures on the first wrong password`() {
-        // No attempt threshold: someone who does not know the password often
-        // stops after one try, and waiting for a third would photograph nobody.
+    fun `protected app access can stage a selfie immediately`() {
         assertThat(
             IntruderCapturePolicy.shouldCapture(
                 surface = Surface.BLOCKED_APP_UNLOCK,
@@ -27,8 +24,37 @@ class IntruderCapturePolicyTest {
     }
 
     @Test
+    fun `abandoned protected app access keeps staged selfie`() {
+        assertThat(
+            IntruderCapturePolicy.shouldKeepAttemptPhoto(
+                authenticatedSuccessfully = false,
+                credentialRejected = false
+            )
+        ).isTrue()
+    }
+
+    @Test
+    fun `clean successful authentication discards staged selfie`() {
+        assertThat(
+            IntruderCapturePolicy.shouldKeepAttemptPhoto(
+                authenticatedSuccessfully = true,
+                credentialRejected = false
+            )
+        ).isFalse()
+    }
+
+    @Test
+    fun `rejected typed credential keeps selfie even after later success`() {
+        assertThat(
+            IntruderCapturePolicy.shouldKeepAttemptPhoto(
+                authenticatedSuccessfully = true,
+                credentialRejected = true
+            )
+        ).isTrue()
+    }
+
+    @Test
     fun `FocusGuard own lock screen never captures`() {
-        // Mistyping your own password is routine; this would photograph the owner.
         assertThat(
             IntruderCapturePolicy.shouldCapture(
                 surface = Surface.FOCUSGUARD_APP_LOCK,
@@ -39,7 +65,6 @@ class IntruderCapturePolicyTest {
 
     @Test
     fun `password management never captures`() {
-        // Only reachable after authenticating, so whoever is there already passed.
         assertThat(
             IntruderCapturePolicy.shouldCapture(
                 surface = Surface.PASSWORD_MANAGEMENT,
