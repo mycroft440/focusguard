@@ -1,6 +1,8 @@
 package com.focusguard.security
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -16,109 +18,117 @@ import java.util.concurrent.atomic.AtomicBoolean
 class CameraManager(private val context: Context) {
 
     private var imageCapture: ImageCapture? = null
-    
-    // Guard against multiple simultaneous capture attempts
+
+    // One CameraManager is owned by the PASSWORD attempt controller. Keep a
+    // single capture in flight so a burst of accessibility events cannot race
+    // CameraX binding/unbinding against itself.
     private val isCapturing = AtomicBoolean(false)
 
     fun setupAndCaptureSilent(lifecycleOwner: LifecycleOwner, onComplete: (File?) -> Unit) {
-        // Prevent concurrent capture attempts that would cause CameraX race conditions
         if (!isCapturing.compareAndSet(false, true)) {
             Log.w("CameraManager", "Capture already in progress, skipping")
             onComplete(null)
             return
         }
 
-        // Safety timeout: reset flag after 5 seconds if no callback is received
-        val timeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        val timeoutRunnable = Runnable {
-            if (isCapturing.get()) {
-                Log.w("CameraManager", "Capture timeout reached, resetting flag")
-                isCapturing.set(false)
-                onComplete(null)
-            }
-        }
-        timeoutHandler.postDelayed(timeoutRunnable, 5000)
-        
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+        val completionDelivered = AtomicBoolean(false)
+        val timeoutHandler = Handler(Looper.getMainLooper())
+        var cameraProvider: ProcessCameraProvider? = null
+        var timeoutRunnable: Runnable? = null
 
+        fun finishOnce(file: File?) {
+            if (!completionDelivered.compareAndSet(false, true)) {
+                // A result arriving after timeout is stale. Never leave an
+                // untracked intruder image behind from a callback the caller has
+                // already considered failed.
+                if (file != null) runCatching { file.delete() }
+                return
+            }
+            timeoutRunnable?.let(timeoutHandler::removeCallbacks)
+            runCatching { cameraProvider?.unbindAll() }
+            isCapturing.set(false)
+            onComplete(file)
+        }
+
+        timeoutRunnable = Runnable {
+            if (!completionDelivered.get()) {
+                Log.w("CameraManager", "Capture timeout reached")
+                finishOnce(null)
+            }
+        }.also { timeoutHandler.postDelayed(it, CAPTURE_TIMEOUT_MILLIS) }
+
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
+            if (completionDelivered.get()) return@addListener
             try {
-                val cameraProvider = cameraProviderFuture.get()
+                val provider = cameraProviderFuture.get()
+                cameraProvider = provider
+                if (completionDelivered.get()) {
+                    runCatching { provider.unbindAll() }
+                    return@addListener
+                }
 
                 imageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
 
-                // Check if front camera is available before trying to bind
                 val cameraSelector = try {
-                    val hasCamera = cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
-                    if (hasCamera) {
+                    val hasFrontCamera = provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+                    if (hasFrontCamera) {
                         CameraSelector.DEFAULT_FRONT_CAMERA
                     } else {
                         Log.w("CameraManager", "No front camera available, trying back camera")
                         CameraSelector.DEFAULT_BACK_CAMERA
                     }
-                } catch (e: Exception) {
-                    Log.e("CameraManager", "Camera check failed, falling back to back camera", e)
+                } catch (error: Exception) {
+                    Log.e("CameraManager", "Camera check failed, falling back to back camera", error)
                     CameraSelector.DEFAULT_BACK_CAMERA
                 }
 
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                provider.unbindAll()
+                provider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
                     imageCapture
                 )
 
-                takePhoto { file ->
-                    // Cancel timeout as we got a response
-                    timeoutHandler.removeCallbacks(timeoutRunnable)
-                    
-                    // Unbind after capture to release camera resources
-                    try {
-                        cameraProvider.unbindAll()
-                    } catch (_: Exception) {}
-                    isCapturing.set(false)
-                    onComplete(file)
-                }
-
-            } catch (exc: Exception) {
-                timeoutHandler.removeCallbacks(timeoutRunnable)
-                Log.e("CameraManager", "Use case binding failed", exc)
-                isCapturing.set(false)
-                onComplete(null)
+                takePhoto { file -> finishOnce(file) }
+            } catch (error: Exception) {
+                Log.e("CameraManager", "Use case binding failed", error)
+                finishOnce(null)
             }
         }, ContextCompat.getMainExecutor(context))
     }
 
     private fun takePhoto(onComplete: (File?) -> Unit) {
-        val imageCapture = imageCapture ?: run {
+        val capture = imageCapture ?: run {
             onComplete(null)
             return
         }
 
-        // PRIVACIDADE: salva fotos de intruso em armazenamento PRIVADO do app
-        // (context.filesDir/IntruderPhotos/). Antes era getExternalFilesDir(null)
-        // — pasta que qualquer app com permissão READ_EXTERNAL_STORAGE pode ler
-        // em API < 29, e que pode ser acessível via SAF em outras APIs.
-        // Para um app de segurança, fotos de quem tentou desbloquear são
-        // altamente sensíveis e não devem sair do sandbox privado.
-        val photosDir = File(context.filesDir, "IntruderPhotos").apply {
-            if (!exists()) mkdirs()
+        // Intruder photos stay inside the app sandbox. The user can explicitly
+        // export a copy later from Intruder Log.
+        val photosDir = File(context.filesDir, "IntruderPhotos")
+        if (!photosDir.exists() && !photosDir.mkdirs()) {
+            Log.e("CameraManager", "Could not create intruder photo directory")
+            onComplete(null)
+            return
         }
         val photoFile = File(
             photosDir,
-            SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US).format(System.currentTimeMillis()) + ".jpg"
+            SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US)
+                .format(System.currentTimeMillis()) + ".jpg"
         )
 
         val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
 
-        imageCapture.takePicture(
+        capture.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onError(exc: ImageCaptureException) {
                     Log.e("CameraManager", "Photo capture failed: ${exc.message}", exc)
+                    runCatching { if (photoFile.exists()) photoFile.delete() }
                     onComplete(null)
                 }
 
@@ -129,5 +139,8 @@ class CameraManager(private val context: Context) {
             }
         )
     }
-}
 
+    private companion object {
+        const val CAPTURE_TIMEOUT_MILLIS = 5_000L
+    }
+}

@@ -1,23 +1,18 @@
 package com.focusguard.security
 
 /**
- * Decides where a failed password is worth photographing.
+ * Decides where an intruder selfie may be staged and when it should be retained.
  *
- * The selfie exists to catch someone trying to get into an app *you* protected —
- * a phone handed over, a curious relative, a stolen device. It is not a general
- * failed-password alarm, and firing it on FocusGuard's own screens photographs
- * the owner far more often than an intruder: mistyping your own password on the
- * lock screen is routine, and the password manager is only reachable after you
- * already authenticated.
- *
- * Every capture is a photo of a real person's face, so the narrower scope is the
- * privacy-correct default as well as the useful one.
+ * The selfie exists to catch an unsuccessful attempt to enter an app protected by
+ * PASSWORD. It is not a general failed-password alarm: FocusGuard's own lock and
+ * password-management screens stay outside this feature. The dedicated app-unlock
+ * Activity owns the camera for the whole access attempt so Back/Home/cancel can be
+ * recorded even when no password was ever submitted.
  */
 object IntruderCapturePolicy {
 
-    /** Where the wrong password was typed. */
     enum class Surface {
-        /** Unlock sheet shown when opening an app protected by a password. */
+        /** Dedicated unlock surface shown before entering a password-protected app. */
         BLOCKED_APP_UNLOCK,
 
         /** FocusGuard's own lock screen. */
@@ -30,22 +25,22 @@ object IntruderCapturePolicy {
         USAGE_LIMIT_UNLOCK
     }
 
-    /** True only for the surface that guards someone else's access attempt. */
+    /** True only for the surface that guards entry into a protected app. */
     fun capturesOn(surface: Surface): Boolean = surface == Surface.BLOCKED_APP_UNLOCK
 
-    /**
-     * Full decision for a wrong password.
-     *
-     * Fires on the *first* wrong attempt rather than after an attempt limit: the
-     * useful photo is of whoever is holding the phone right now, and someone who
-     * does not know the password often stops after one try — waiting for a third
-     * would photograph nobody.
-     *
-     * The cost is that the owner's own mistyped password also produces a photo.
-     * That is the deliberate trade, and the preference is off by default.
-     */
+    /** Whether this access attempt should stage an intruder photo. */
     fun shouldCapture(
         surface: Surface,
         photoCaptureEnabled: Boolean
     ): Boolean = photoCaptureEnabled && capturesOn(surface)
+
+    /**
+     * A staged photo is kept whenever the access did not end in a clean successful
+     * authentication. A rejected typed password/pattern remains evidence even if
+     * the person later manages to authenticate during the same attempt.
+     */
+    fun shouldKeepAttemptPhoto(
+        authenticatedSuccessfully: Boolean,
+        credentialRejected: Boolean
+    ): Boolean = credentialRejected || !authenticatedSuccessfully
 }

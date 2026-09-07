@@ -43,8 +43,6 @@ import com.focusguard.manager.BlockingSessionManager
 import com.focusguard.security.AppUnlockBiometricAuthenticator
 import com.focusguard.security.AuthManager
 import com.focusguard.security.BiometricAppUnlockPolicy
-import com.focusguard.security.CameraManager
-import com.focusguard.security.IntruderCapturePolicy
 import com.focusguard.security.PasswordAppUnlockMode
 import com.focusguard.security.PasswordAppUnlockStore
 import com.focusguard.security.PasswordTargetAccessGrant
@@ -66,6 +64,8 @@ private const val BIOMETRIC_FAILURES_BEFORE_FALLBACK = 2
  * unlock grants a temporary visit and never edits or deletes the PASSWORD block.
  * Cancelling authentication returns control to the owner Activity so the protected
  * target can be closed instead of falling back to a generic block surface.
+ * Intruder-camera ownership also stays in that Activity so the whole access
+ * attempt, including cancel/Back without a submitted password, can be recorded.
  */
 @Composable
 internal fun PasswordProtectedTargetUnlockPanel(
@@ -74,6 +74,7 @@ internal fun PasswordProtectedTargetUnlockPanel(
     authManager: AuthManager,
     sessionManager: BlockingSessionManager,
     onUnlocked: () -> Unit,
+    onCredentialRejected: () -> Unit = {},
     onCancelled: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -103,19 +104,6 @@ internal fun PasswordProtectedTargetUnlockPanel(
     val promptTitle = stringResource(R.string.password_app_unlock_biometric_prompt_title)
     val promptSubtitle = stringResource(R.string.password_app_unlock_biometric_prompt_subtitle)
     val cancelLabel = stringResource(R.string.cancel)
-
-    fun captureIntruderIfNeeded() {
-        if (
-            IntruderCapturePolicy.shouldCapture(
-                surface = IntruderCapturePolicy.Surface.BLOCKED_APP_UNLOCK,
-                photoCaptureEnabled = authManager.isPhotoCaptureEnabled()
-            )
-        ) {
-            activity?.let { host ->
-                CameraManager(host).setupAndCaptureSilent(host) { _ -> }
-            }
-        }
-    }
 
     fun revokePendingGrant() {
         if (websiteRule != null) {
@@ -427,7 +415,7 @@ internal fun PasswordProtectedTargetUnlockPanel(
                         completeUnlock()
                     } else {
                         error = wrongCredentialMessage
-                        captureIntruderIfNeeded()
+                        onCredentialRejected()
                     }
                 }
             )
@@ -448,7 +436,7 @@ internal fun PasswordProtectedTargetUnlockPanel(
                         completeUnlock(onInvalid = reset)
                     } else {
                         error = wrongCredentialMessage
-                        captureIntruderIfNeeded()
+                        onCredentialRejected()
                         reset()
                     }
                 }
@@ -466,6 +454,7 @@ internal fun PasswordProtectedAppUnlockPanel(
     authManager: AuthManager,
     sessionManager: BlockingSessionManager,
     onUnlocked: () -> Unit,
+    onCredentialRejected: () -> Unit = {},
     onCancelled: () -> Unit = {}
 ) = PasswordProtectedTargetUnlockPanel(
     blockedPackage = blockedPackage,
@@ -473,6 +462,7 @@ internal fun PasswordProtectedAppUnlockPanel(
     authManager = authManager,
     sessionManager = sessionManager,
     onUnlocked = onUnlocked,
+    onCredentialRejected = onCredentialRejected,
     onCancelled = onCancelled
 )
 
