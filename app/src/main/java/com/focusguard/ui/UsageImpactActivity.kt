@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,8 +56,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Dedicated metrics surface shown after a non-password timed intervention blocks
- * an app. The monetization layout is intentionally simple: one adaptive banner
- * above the metrics and one below them, with no ad inserted between the metrics.
+ * an app. Two anchored banners remain around the metrics while a third banner is
+ * part of the scrollable content at the real end of the page.
  */
 class UsageImpactActivity : AppCompatActivity() {
     private var targetPackage by mutableStateOf("")
@@ -137,6 +139,7 @@ private fun UsageImpactScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
                 .padding(
                     horizontal = horizontalPadding,
                     vertical = if (compact) 10.dp else 14.dp
@@ -163,7 +166,9 @@ private fun UsageImpactScreen(
             val data = snapshot
             if (data == null) {
                 Box(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (compact) 220.dp else 280.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(34.dp))
@@ -227,7 +232,7 @@ private fun UsageImpactScreen(
                     maxLines = 3
                 )
 
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(if (compact) 14.dp else 20.dp))
                 Button(
                     onClick = onClose,
                     modifier = Modifier
@@ -236,6 +241,9 @@ private fun UsageImpactScreen(
                 ) {
                     Text("Voltar", fontSize = if (compact) 14.sp else 15.sp)
                 }
+                Spacer(Modifier.height(if (compact) 14.dp else 18.dp))
+                FocusGuardBannerAd(modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(4.dp))
             }
         }
     }
