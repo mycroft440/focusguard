@@ -6,6 +6,9 @@
     </plurals>
     <string name="dopamine_schedule_description">Os apps e sites selecionados ficam bloqueados durante o dia inteiro somente nos dias da semana que você marcar, até o fim da duração escolhida.</string>
     <string name="dopamine_schedule_terms_how">Escolha o que bloquear, em quais dias da semana o bloqueio será aplicado e a duração total. Nos dias marcados, os alvos ficam bloqueados durante o dia inteiro; nos dias não marcados, ficam disponíveis. O compromisso não pode ser encerrado antes do fim.</string>
+    <string name="dopamine_continue_to_schedule">Continuar para dias e duração</string>
+    <string name="dopamine_schedule_config_title">Dias e duração</string>
+    <string name="dopamine_schedule_config_subtitle">Escolha os dias da semana em que o bloqueio será aplicado e por quanto tempo o compromisso ficará ativo.</string>
     <string name="dopamine_weekdays_question">Quais dias da semana deseja bloquear?</string>
     <string name="dopamine_weekdays_hint">O bloqueio será aplicado durante o dia inteiro somente nos dias marcados.</string>
     <string name="dopamine_weekdays_required">Selecione pelo menos um dia da semana.</string>

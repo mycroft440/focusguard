@@ -2,6 +2,7 @@ package com.focusguard.ui.compose.screens
 
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -74,6 +75,11 @@ import java.util.Calendar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
+private enum class TimeBlockConfigPage {
+    TERMS,
+    SCHEDULE
+}
+
 private data class DopamineWeekday(
     val calendarDay: Int,
     @StringRes val labelRes: Int
@@ -102,7 +108,7 @@ fun TimeBlockSessionConfigScreen(
     val scope = rememberCoroutineScope()
     val sessionManager = remember(context) { BlockingSessionManager.getInstance(context) }
 
-    // "Para sempre" só é ofertado quando o alvo é exclusivamente pornografia.
+    var page by remember { mutableStateOf(TimeBlockConfigPage.TERMS) }
     val availableUnits = remember(apps, sites) {
         BlockDurationPolicy.availableUnits(rules = sites, hasApps = apps.isNotEmpty())
     }
@@ -127,10 +133,22 @@ fun TimeBlockSessionConfigScreen(
             .filter { it.calendarDay in selectedDays }
             .joinToString(",") { it.calendarDay.toString() }
     }
+    val hasTargets = apps.isNotEmpty() || sites.isNotEmpty()
+    val canContinue = termsAccepted && hasTargets
     val canSave = duration != null &&
         termsAccepted &&
         selectedDays.isNotEmpty() &&
-        (apps.isNotEmpty() || sites.isNotEmpty())
+        hasTargets
+
+    fun navigateBack() {
+        if (page == TimeBlockConfigPage.SCHEDULE) {
+            page = TimeBlockConfigPage.TERMS
+        } else {
+            onBack()
+        }
+    }
+
+    BackHandler(onBack = ::navigateBack)
 
     if (showMasterCredentialSetup) {
         DeactivationCredentialDialog(
@@ -196,7 +214,7 @@ fun TimeBlockSessionConfigScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.dopamine_title), color = TextPrimary) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = ::navigateBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.action_back),
@@ -217,164 +235,249 @@ fun TimeBlockSessionConfigScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 18.dp)
         ) {
-            // A explicação é o primeiro conteúdo da tela, como solicitado, para que
-            // o compromisso seja entendido antes de qualquer configuração.
-            DopamineHowItWorksCard(
-                termsAccepted = termsAccepted,
-                onTermsAcceptedChange = { termsAccepted = it }
+            when (page) {
+                TimeBlockConfigPage.TERMS -> TimeBlockTermsPage(
+                    appName = appName,
+                    apps = apps,
+                    termsAccepted = termsAccepted,
+                    canContinue = canContinue,
+                    onTermsAcceptedChange = { termsAccepted = it },
+                    onContinue = { page = TimeBlockConfigPage.SCHEDULE },
+                    onBack = onBack
+                )
+
+                TimeBlockConfigPage.SCHEDULE -> TimeBlockSchedulePage(
+                    durationUnit = durationUnit,
+                    amountText = amountText,
+                    availableUnits = availableUnits,
+                    selectedDays = selectedDays,
+                    isSaving = isSaving,
+                    canSave = canSave,
+                    onDurationUnitChange = { durationUnit = it },
+                    onAmountChange = { amountText = it },
+                    onToggleDay = { day ->
+                        selectedDays = if (day in selectedDays) {
+                            selectedDays - day
+                        } else {
+                            selectedDays + day
+                        }
+                    },
+                    onActivate = {
+                        if (isSaving) return@TimeBlockSchedulePage
+                        isSaving = true
+                        scope.launch {
+                            try {
+                                val resolved = duration ?: run {
+                                    isSaving = false
+                                    return@launch
+                                }
+                                sessionManager.startTimeSession(
+                                    days = 0,
+                                    hours = when (resolved) {
+                                        is BlockDurationPolicy.Duration.Finite -> resolved.totalHours
+                                        BlockDurationPolicy.Duration.Forever -> 0
+                                    },
+                                    openEnded = resolved is BlockDurationPolicy.Duration.Forever,
+                                    // A recorrência continua sendo de dia inteiro; a separação
+                                    // em duas telas é somente de configuração/apresentação.
+                                    isFixed24h = false,
+                                    startHour = 0,
+                                    endHour = 24,
+                                    startMinute = 0,
+                                    endMinute = 0,
+                                    daysOfWeek = selectedDaysSerialized,
+                                    apps = apps,
+                                    sites = sites
+                                )
+                                isSaving = false
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.bloqueio_por_tempo_ativado),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                onFinish()
+                            } catch (cancelled: CancellationException) {
+                                isSaving = false
+                                throw cancelled
+                            } catch (error: BlockingProtectionUnavailableException) {
+                                isSaving = false
+                                pendingProtectionReason = error.reason
+                            } catch (error: Exception) {
+                                isSaving = false
+                                FocusGuardLogger.logError(
+                                    "TimeBlockConfig",
+                                    "Falha ao ativar bloqueio por tempo",
+                                    error
+                                )
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.erro_ao_iniciar_sessao),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    },
+                    onBack = { page = TimeBlockConfigPage.TERMS }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimeBlockTermsPage(
+    appName: String,
+    apps: List<String>,
+    termsAccepted: Boolean,
+    canContinue: Boolean,
+    onTermsAcceptedChange: (Boolean) -> Unit,
+    onContinue: () -> Unit,
+    onBack: () -> Unit
+) {
+    DopamineHowItWorksCard(
+        termsAccepted = termsAccepted,
+        onTermsAcceptedChange = onTermsAcceptedChange
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    SelectedAppsSummary(
+        appName = appName,
+        apps = apps
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    Surface(
+        color = AccentCyan.copy(alpha = 0.10f),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.dopamine_simple_mode_info),
+            color = TextSecondary,
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            fontSize = 13.sp
+        )
+    }
+
+    Spacer(modifier = Modifier.height(24.dp))
+
+    Button(
+        onClick = onContinue,
+        enabled = canContinue,
+        modifier = Modifier.fillMaxWidth().height(56.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Text(
+            stringResource(R.string.dopamine_continue_to_schedule),
+            color = DarkBg,
+            fontWeight = FontWeight.Bold
+        )
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+        Text(stringResource(R.string.common_back), color = TextSecondary)
+    }
+}
+
+@Composable
+private fun TimeBlockSchedulePage(
+    durationUnit: BlockDurationPolicy.Unit,
+    amountText: String,
+    availableUnits: List<BlockDurationPolicy.Unit>,
+    selectedDays: Set<Int>,
+    isSaving: Boolean,
+    canSave: Boolean,
+    onDurationUnitChange: (BlockDurationPolicy.Unit) -> Unit,
+    onAmountChange: (String) -> Unit,
+    onToggleDay: (Int) -> Unit,
+    onActivate: () -> Unit,
+    onBack: () -> Unit
+) {
+    Text(
+        text = stringResource(R.string.dopamine_schedule_config_title),
+        color = TextPrimary,
+        fontSize = 22.sp,
+        fontWeight = FontWeight.Bold
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    Text(
+        text = stringResource(R.string.dopamine_schedule_config_subtitle),
+        color = TextSecondary,
+        fontSize = 13.sp
+    )
+
+    Spacer(modifier = Modifier.height(18.dp))
+
+    DopamineWeekdaySelector(
+        selectedDays = selectedDays,
+        onToggleDay = onToggleDay
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = DarkCard),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Text(
+                text = stringResource(R.string.dopamine_duration_days_question),
+                color = TextPrimary,
+                fontWeight = FontWeight.SemiBold
             )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            SelectedAppsSummary(
-                appName = appName,
-                apps = apps
+            Spacer(modifier = Modifier.height(14.dp))
+            BlockDurationPicker(
+                unit = durationUnit,
+                amountText = amountText,
+                onUnitChange = onDurationUnitChange,
+                onAmountChange = onAmountChange,
+                accent = DangerRed,
+                units = availableUnits
             )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
+            Spacer(modifier = Modifier.height(14.dp))
             Surface(
-                color = AccentCyan.copy(alpha = 0.10f),
+                color = DangerRed.copy(alpha = 0.10f),
                 shape = RoundedCornerShape(14.dp)
             ) {
                 Text(
-                    text = stringResource(R.string.dopamine_simple_mode_info),
-                    color = TextSecondary,
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    fontSize = 13.sp
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            DopamineWeekdaySelector(
-                selectedDays = selectedDays,
-                onToggleDay = { day ->
-                    selectedDays = if (day in selectedDays) {
-                        selectedDays - day
+                    text = if (durationUnit == BlockDurationPolicy.Unit.FOREVER) {
+                        stringResource(R.string.dopamine_duration_forever_warning)
                     } else {
-                        selectedDays + day
-                    }
-                }
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = DarkCard),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Text(
-                        text = stringResource(R.string.dopamine_duration_days_question),
-                        color = TextPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    BlockDurationPicker(
-                        unit = durationUnit,
-                        amountText = amountText,
-                        onUnitChange = { durationUnit = it },
-                        onAmountChange = { amountText = it },
-                        accent = DangerRed,
-                        units = availableUnits
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Surface(
-                        color = DangerRed.copy(alpha = 0.10f),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Text(
-                            text = if (durationUnit == BlockDurationPolicy.Unit.FOREVER) {
-                                stringResource(R.string.dopamine_duration_forever_warning)
-                            } else {
-                                stringResource(R.string.dopamine_warning)
-                            },
-                            color = DangerRed,
-                            modifier = Modifier.padding(12.dp),
-                            textAlign = TextAlign.Start
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            Button(
-                onClick = {
-                    if (isSaving) return@Button
-                    isSaving = true
-                    scope.launch {
-                        try {
-                            val resolved = duration ?: return@launch
-                            sessionManager.startTimeSession(
-                                days = 0,
-                                hours = when (resolved) {
-                                    is BlockDurationPolicy.Duration.Finite -> resolved.totalHours
-                                    BlockDurationPolicy.Duration.Forever -> 0
-                                },
-                                openEnded = resolved is BlockDurationPolicy.Duration.Forever,
-                                // Full-day recurring window. Unlike isFixed24h=true,
-                                // this keeps recurringDaysOfWeek active, so unselected
-                                // weekdays are genuinely released by the enforcer.
-                                isFixed24h = false,
-                                startHour = 0,
-                                endHour = 24,
-                                startMinute = 0,
-                                endMinute = 0,
-                                daysOfWeek = selectedDaysSerialized,
-                                apps = apps,
-                                sites = sites
-                            )
-                            isSaving = false
-                            Toast.makeText(
-                                context,
-                                context.getString(R.string.bloqueio_por_tempo_ativado),
-                                Toast.LENGTH_LONG
-                            ).show()
-                            onFinish()
-                        } catch (cancelled: CancellationException) {
-                            isSaving = false
-                            throw cancelled
-                        } catch (
-                            error: BlockingProtectionUnavailableException
-                        ) {
-                            isSaving = false
-                            pendingProtectionReason = error.reason
-                        } catch (error: Exception) {
-                            isSaving = false
-                            FocusGuardLogger.logError(
-                                "TimeBlockConfig",
-                                "Falha ao ativar bloqueio por tempo",
-                                error
-                            )
-                            Toast.makeText(
-                                context,
-                                context.getString(R.string.erro_ao_iniciar_sessao),
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
-                },
-                enabled = canSave && !isSaving,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(
-                    stringResource(R.string.dopamine_activate),
-                    color = DarkBg,
-                    fontWeight = FontWeight.Bold
+                        stringResource(R.string.dopamine_warning)
+                    },
+                    color = DangerRed,
+                    modifier = Modifier.padding(12.dp),
+                    textAlign = TextAlign.Start
                 )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.common_back), color = TextSecondary)
             }
         }
+    }
+
+    Spacer(modifier = Modifier.height(24.dp))
+
+    Button(
+        onClick = onActivate,
+        enabled = canSave && !isSaving,
+        modifier = Modifier.fillMaxWidth().height(56.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = AccentCyan),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Text(
+            stringResource(R.string.dopamine_activate),
+            color = DarkBg,
+            fontWeight = FontWeight.Bold
+        )
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+        Text(stringResource(R.string.common_back), color = TextSecondary)
     }
 }
 
