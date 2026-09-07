@@ -8,11 +8,13 @@ import com.google.android.libraries.ads.mobile.sdk.MobileAds
 import com.google.android.libraries.ads.mobile.sdk.banner.AdSize
 import com.google.android.libraries.ads.mobile.sdk.banner.AdView
 import com.google.android.libraries.ads.mobile.sdk.banner.BannerAd
+import com.google.android.libraries.ads.mobile.sdk.banner.BannerAdPreloader
 import com.google.android.libraries.ads.mobile.sdk.banner.BannerAdRequest
 import com.google.android.libraries.ads.mobile.sdk.common.AdLoadCallback
 import com.google.android.libraries.ads.mobile.sdk.common.AdRequest
 import com.google.android.libraries.ads.mobile.sdk.common.FullScreenContentError
 import com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
+import com.google.android.libraries.ads.mobile.sdk.common.PreloadConfiguration
 import com.google.android.libraries.ads.mobile.sdk.initialization.InitializationConfig
 import com.google.android.libraries.ads.mobile.sdk.interstitial.InterstitialAd
 import com.google.android.libraries.ads.mobile.sdk.interstitial.InterstitialAdEventCallback
@@ -45,6 +47,9 @@ object FocusGuardAds {
     const val TEST_ADAPTIVE_BANNER_ID = "ca-app-pub-3940256099942544/9214589741"
     const val TEST_NATIVE_ID = "ca-app-pub-3940256099942544/2247696110"
 
+    private const val ADAPTIVE_BANNER_PRELOAD_BUFFER_SIZE = 2
+    private const val ADAPTIVE_BANNER_PRELOAD_PREFIX = "focusguard-adaptive-banner"
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val initMutex = Mutex()
 
@@ -54,11 +59,32 @@ object FocusGuardAds {
     private val pomodoroAdInFlight = AtomicBoolean(false)
 
     /**
-     * Mantido para compatibilidade com o Application. Não inicializa o SDK sem uma
-     * Activity, pois a primeira solicitação precisa passar pela UMP.
+     * Mantido para compatibilidade com o Application. O processo ainda não possui
+     * uma Activity capaz de concluir a UMP, portanto o preload real começa no
+     * primeiro warmUp(ComponentActivity).
      */
     fun warmUp(context: Context) {
-        FocusGuardLogger.log("Ads", "Warm-up adiado até uma Activity poder validar consentimento")
+        FocusGuardLogger.log("Ads", "Warm-up aguardando a primeira Activity para validar consentimento")
+    }
+
+    /**
+     * Inicia consentimento + SDK + preload do banner já na abertura da Activity.
+     *
+     * O preloader oficial mantém um buffer pequeno e o reabastece automaticamente
+     * depois que uma tela consome um BannerAd. Nenhum AdView invisível é mantido.
+     */
+    fun warmUp(activity: ComponentActivity) {
+        if (activity.isFinishing || activity.isDestroyed) return
+        withAdsReady(
+            activity = activity,
+            onUnavailable = { message ->
+                FocusGuardLogger.log("Ads", "Warm-up indisponível: $message")
+            },
+            onReady = {
+                val widthDp = activity.resources.configuration.screenWidthDp.coerceAtLeast(300)
+                startAdaptiveBannerPreload(activity, widthDp)
+            }
+        )
     }
 
     private suspend fun ensureInitialized(context: Context) {
@@ -113,6 +139,40 @@ object FocusGuardAds {
         }
     }
 
+    private fun startAdaptiveBannerPreload(
+        activity: ComponentActivity,
+        widthDp: Int
+    ) {
+        val normalizedWidthDp = widthDp.coerceAtLeast(300)
+        val preloadId = adaptiveBannerPreloadId(normalizedWidthDp)
+        val adSize = AdSize.getLargeAnchoredAdaptiveBannerAdSize(
+            activity,
+            normalizedWidthDp
+        )
+        val request = BannerAdRequest.Builder(
+            TEST_ADAPTIVE_BANNER_ID,
+            adSize
+        ).build()
+        val started = BannerAdPreloader.start(
+            preloadId,
+            PreloadConfiguration(
+                request = request,
+                bufferSize = ADAPTIVE_BANNER_PRELOAD_BUFFER_SIZE
+            )
+        )
+        FocusGuardLogger.log(
+            "Ads",
+            if (started) {
+                "Preload de banner iniciado para largura ${normalizedWidthDp}dp"
+            } else {
+                "Preload de banner já ativo para largura ${normalizedWidthDp}dp"
+            }
+        )
+    }
+
+    private fun adaptiveBannerPreloadId(widthDp: Int): String =
+        "$ADAPTIVE_BANNER_PRELOAD_PREFIX-${widthDp.coerceAtLeast(300)}"
+
     fun loadNative(
         activity: ComponentActivity,
         onLoaded: (NativeAd) -> Unit,
@@ -161,9 +221,22 @@ object FocusGuardAds {
             activity = activity,
             onUnavailable = onUnavailable,
             onReady = {
+                val normalizedWidthDp = widthDp.coerceAtLeast(300)
+                val preloadId = adaptiveBannerPreloadId(normalizedWidthDp)
+                val preloadedAd = BannerAdPreloader.pollAd(preloadId)
+                if (preloadedAd != null) {
+                    adView.registerBannerAd(preloadedAd, activity)
+                    FocusGuardLogger.log(
+                        "Ads",
+                        "Banner adaptativo servido do preload para ${normalizedWidthDp}dp"
+                    )
+                    onLoaded()
+                    return@withAdsReady
+                }
+
                 val adSize = AdSize.getLargeAnchoredAdaptiveBannerAdSize(
                     activity,
-                    widthDp.coerceAtLeast(300)
+                    normalizedWidthDp
                 )
                 val request = BannerAdRequest.Builder(
                     TEST_ADAPTIVE_BANNER_ID,
@@ -173,7 +246,7 @@ object FocusGuardAds {
                     request,
                     object : AdLoadCallback<BannerAd> {
                         override fun onAdLoaded(ad: BannerAd) {
-                            FocusGuardLogger.log("Ads", "Banner adaptativo de impacto carregado")
+                            FocusGuardLogger.log("Ads", "Banner adaptativo carregado diretamente")
                             onLoaded()
                         }
 
