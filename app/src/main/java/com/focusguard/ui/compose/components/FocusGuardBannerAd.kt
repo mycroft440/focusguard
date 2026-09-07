@@ -24,8 +24,8 @@ import kotlin.math.roundToInt
 /**
  * Anchored adaptive banner that owns the AdView lifecycle.
  *
- * The SDK gives AdView its height only when a banner is loaded, so an unavailable
- * ad naturally collapses instead of leaving a permanent empty rectangle.
+ * The Android view is attached only after the SDK confirms a loaded banner. A
+ * denied consent choice or load failure therefore reserves no empty footer space.
  */
 @Composable
 fun FocusGuardBannerAd(modifier: Modifier = Modifier) {
@@ -38,6 +38,7 @@ fun FocusGuardBannerAd(modifier: Modifier = Modifier) {
             .background(DarkBg)
     ) {
         val widthDp = maxWidth.value.roundToInt().coerceAtLeast(300)
+        var loaded by remember(activity, widthDp) { mutableStateOf(false) }
         var unavailable by remember(activity, widthDp) { mutableStateOf(false) }
         val adView = remember(activity, widthDp) { AdView(activity) }
 
@@ -48,16 +49,21 @@ fun FocusGuardBannerAd(modifier: Modifier = Modifier) {
         }
 
         LaunchedEffect(activity, adView, widthDp) {
+            loaded = false
             unavailable = false
             FocusGuardAds.loadLargeAdaptiveBanner(
                 activity = activity,
                 adView = adView,
                 widthDp = widthDp,
-                onUnavailable = { unavailable = true }
+                onLoaded = { loaded = true },
+                onUnavailable = {
+                    loaded = false
+                    unavailable = true
+                }
             )
         }
 
-        if (!unavailable) {
+        if (loaded && !unavailable) {
             AndroidView(
                 factory = { adView },
                 modifier = Modifier.fillMaxWidth()
