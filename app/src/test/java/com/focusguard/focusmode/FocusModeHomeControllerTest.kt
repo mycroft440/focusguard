@@ -2,6 +2,7 @@ package com.focusguard.focusmode
 
 import android.app.admin.DevicePolicyManager
 import android.content.Intent
+import com.focusguard.admin.DeviceOwnerManager
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -13,21 +14,26 @@ import org.robolectric.annotation.Config
 class FocusModeHomeControllerTest {
 
     @Test
-    fun `native home keeps only home and global power actions`() {
-        val expected = DevicePolicyManager.LOCK_TASK_FEATURE_HOME or
-            DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS
+    fun `native kiosk blocks home and overview while preserving global power actions`() {
+        val expected = DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS
 
         assertThat(FocusModeHomeController.requiredLockTaskFeatures()).isEqualTo(expected)
-        assertThat(FocusModeHomeController.lockTaskFeaturesKeepHomeAndPower(expected)).isTrue()
+        assertThat(FocusModeHomeController.lockTaskFeaturesBlockHomeAndKeepPower(expected)).isTrue()
+        assertThat(DeviceOwnerManager.lockTaskFeaturesKeepOnlyGlobalActions(expected)).isTrue()
         assertThat(
-            FocusModeHomeController.lockTaskFeaturesKeepHomeAndPower(
+            FocusModeHomeController.lockTaskFeaturesBlockHomeAndKeepPower(
+                expected or DevicePolicyManager.LOCK_TASK_FEATURE_HOME
+            )
+        ).isFalse()
+        assertThat(
+            FocusModeHomeController.lockTaskFeaturesBlockHomeAndKeepPower(
                 expected or DevicePolicyManager.LOCK_TASK_FEATURE_OVERVIEW
             )
         ).isFalse()
     }
 
     @Test
-    fun `temporary home filter is a real default home intent`() {
+    fun `temporary home filter remains a real default home fallback`() {
         val filter = FocusModeHomeController.homeIntentFilter()
 
         assertThat(filter.hasAction(Intent.ACTION_MAIN)).isTrue()
