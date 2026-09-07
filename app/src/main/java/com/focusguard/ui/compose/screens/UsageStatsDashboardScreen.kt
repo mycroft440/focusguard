@@ -739,7 +739,7 @@ fun MostUsedAppsSection(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.dashboard_most_used), color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.dashboard_most_used_month), color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.dashboard_daily_avg), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     Switch(checked = showAverage, onCheckedChange = onToggleAverage, modifier = Modifier.scale(0.8f))
