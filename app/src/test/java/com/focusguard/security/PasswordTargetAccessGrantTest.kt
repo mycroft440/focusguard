@@ -16,7 +16,10 @@ class PasswordTargetAccessGrantTest {
             // Browsers can report the outgoing Activity background/stopped after
             // the new Activity from the same package is already foreground.
             latestTargetPackageBackgroundAt = 250L,
-            latestTargetStoppedAt = 260L
+            latestTargetStoppedAt = 260L,
+            latestTargetForegroundClassName = "com.example.browser.HistoryActivity",
+            latestTargetBackgroundClassName = "com.example.browser.BrowserActivity",
+            latestTargetStoppedClassName = "com.example.browser.BrowserActivity"
         )
 
         assertThat(
@@ -30,13 +33,16 @@ class PasswordTargetAccessGrantTest {
     }
 
     @Test
-    fun `same package resume after background keeps one visit grant`() {
+    fun `different internal activity resumed after background keeps one visit grant`() {
         val observation = PasswordTargetAccessGrant.AppVisitObservation(
             latestForegroundPackage = target,
             latestTargetForegroundAt = 300L,
             latestNonTargetForegroundAt = Long.MIN_VALUE,
             latestTargetPackageBackgroundAt = 220L,
-            latestTargetStoppedAt = 230L
+            latestTargetStoppedAt = 230L,
+            latestTargetForegroundClassName = "com.example.browser.DownloadsActivity",
+            latestTargetBackgroundClassName = "com.example.browser.BrowserActivity",
+            latestTargetStoppedClassName = "com.example.browser.BrowserActivity"
         )
 
         assertThat(
@@ -47,6 +53,28 @@ class PasswordTargetAccessGrantTest {
                 observation = observation
             )
         ).isFalse()
+    }
+
+    @Test
+    fun `same activity reopen still ends original one visit grant`() {
+        val observation = PasswordTargetAccessGrant.AppVisitObservation(
+            latestForegroundPackage = target,
+            latestTargetForegroundAt = 300L,
+            latestNonTargetForegroundAt = Long.MIN_VALUE,
+            latestTargetPackageBackgroundAt = 220L,
+            latestTargetStoppedAt = Long.MIN_VALUE,
+            latestTargetForegroundClassName = "com.example.browser.BrowserActivity",
+            latestTargetBackgroundClassName = "com.example.browser.BrowserActivity"
+        )
+
+        assertThat(
+            PasswordTargetAccessGrant.shouldRevokeAppGrant(
+                target = target,
+                targetSeenForeground = true,
+                visitStartedAt = 100L,
+                observation = observation
+            )
+        ).isTrue()
     }
 
     @Test
