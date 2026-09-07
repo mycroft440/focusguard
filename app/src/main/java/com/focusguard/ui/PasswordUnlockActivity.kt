@@ -4,7 +4,9 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -39,8 +42,10 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.doOnPreDraw
 import com.focusguard.R
 import com.focusguard.manager.BlockingSessionManager
+import com.focusguard.security.AppUnlockBiometricAuthenticator
 import com.focusguard.security.AuthManager
 import com.focusguard.security.CurtainDestinationReadyCoordinator
+import com.focusguard.security.PasswordAppUnlockMode
 import com.focusguard.security.PasswordAppUnlockStore
 import com.focusguard.security.SafeSurfaceReadinessPolicy
 import com.focusguard.service.BlockingAccessibilityService
@@ -283,12 +288,32 @@ private fun PasswordUnlockContent(
         PasswordAppUnlockStore(context).get(blockedPackage)
     }
     var unlocked by remember(blockAttemptId) { mutableStateOf(false) }
+    var biometricAvailability by remember(blockAttemptId) {
+        mutableStateOf(AppUnlockBiometricAuthenticator.availability(context))
+    }
+    val biometricEnrollmentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        biometricAvailability = AppUnlockBiometricAuthenticator.availability(context)
+    }
+    val biometricOnlyNeedsEnrollment =
+        config?.mode == PasswordAppUnlockMode.BIOMETRIC_ONLY &&
+            biometricAvailability != AppUnlockBiometricAuthenticator.Availability.AVAILABLE
 
     // A malformed/missing PASSWORD target must not strand the user on a dead
     // authentication screen and must never fall through to the generic block UI.
     LaunchedEffect(blockAttemptId, blockedPackage, config) {
         if (blockedPackage.isNullOrBlank() || config == null) {
             onCancelled()
+        }
+    }
+
+    // Re-check after the opaque curtain hands control to this Activity. This
+    // closes the race where the user removes the enrolled biometric after the
+    // block was configured but before the next protected-app attempt.
+    LaunchedEffect(blockAttemptId, authenticationReady) {
+        if (authenticationReady) {
+            biometricAvailability = AppUnlockBiometricAuthenticator.availability(context)
         }
     }
 
@@ -378,6 +403,31 @@ private fun PasswordUnlockContent(
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center
                     )
+                }
+                biometricOnlyNeedsEnrollment -> {
+                    Text(
+                        text = stringResource(
+                            R.string.password_app_unlock_biometric_blocked_until_restored
+                        ),
+                        color = DangerRed,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            biometricEnrollmentLauncher.launch(
+                                AppUnlockBiometricAuthenticator.createEnrollmentIntent(context)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().height(50.dp)
+                    ) {
+                        Text(
+                            stringResource(
+                                R.string.password_app_unlock_biometric_reactivate_action
+                            )
+                        )
+                    }
                 }
                 else -> {
                     PasswordProtectedTargetUnlockPanel(
