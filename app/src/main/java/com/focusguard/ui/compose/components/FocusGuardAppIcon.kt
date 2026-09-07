@@ -1,5 +1,6 @@
 package com.focusguard.ui.compose.components
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.util.LruCache
 import androidx.annotation.DrawableRes
@@ -35,18 +36,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Single app-icon renderer used by blocking and usage-limit screens.
+ * Single app-icon renderer used by blocking, usage-limit and analytics screens.
  *
  * Resolution priority is deliberate:
- * 1) installed app -> always use the original launcher icon from PackageManager;
- * 2) known uninstalled app -> try its official/domain favicon at high resolution;
- * 3) bundled brand artwork when available;
- * 4) branded local fallback as the last resort.
+ * 1) installed app -> launcher Activity icon, matching the icon the user opens;
+ * 2) installed app without a resolvable launcher icon -> Application icon;
+ * 3) known uninstalled app -> official/domain favicon at high resolution;
+ * 4) bundled brand artwork when available;
+ * 5) branded local fallback as the last resort.
  *
- * Installed icons are rendered on a transparent container. This is important for
- * adaptive/legacy launcher artwork with transparent corners: placing FocusGuard's
- * fallback color underneath the bitmap changes the icon's apparent background and
- * no longer looks like the icon the user sees in the Android launcher.
+ * Installed artwork is never painted on a FocusGuard fallback background and is
+ * not forced into a new circular/rounded mask. Adaptive and legacy icons therefore
+ * keep the shape and transparent padding supplied by Android/the app itself.
  */
 @Composable
 fun FocusGuardAppIcon(
@@ -73,10 +74,7 @@ fun FocusGuardAppIcon(
         }
 
         val loaded = withContext(Dispatchers.IO) {
-            runCatching {
-                context.packageManager.getApplicationIcon(packageName)
-                    .toBitmap(APP_ICON_SIZE_PX, APP_ICON_SIZE_PX)
-            }.getOrNull()
+            loadInstalledLauncherBitmap(context, packageName)
         }
 
         if (loaded != null) {
@@ -89,15 +87,13 @@ fun FocusGuardAppIcon(
     val shape = RoundedCornerShape(cornerRadius)
     val installed = installedBitmap
 
-    // Installed apps must look exactly like Android's launcher artwork. Do not
-    // paint a FocusGuard background/fallback beneath transparent icon pixels.
     if (installed != null) {
         val bitmap = remember(installed) { installed.asImageBitmap() }
         Image(
             bitmap = bitmap,
             contentDescription = appName,
             contentScale = ContentScale.Fit,
-            modifier = modifier.clip(shape)
+            modifier = modifier
         )
         return
     }
@@ -112,9 +108,7 @@ fun FocusGuardAppIcon(
         }
     }
 
-    // This styled container is intentionally restricted to apps that PackageManager
-    // could not resolve as installed. It keeps the attractive catalog fallback for
-    // preventive/uninstalled apps without contaminating original installed icons.
+    // Styled containers are restricted to targets Android cannot resolve locally.
     Box(
         modifier = modifier
             .clip(shape)
@@ -144,6 +138,23 @@ fun FocusGuardAppIcon(
             }
         }
     }
+}
+
+private fun loadInstalledLauncherBitmap(context: Context, packageName: String): Bitmap? {
+    val packageManager = context.packageManager
+    val launcherDrawable = runCatching {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val component = launchIntent?.component ?: launchIntent?.resolveActivity(packageManager)
+        component?.let { packageManager.getActivityIcon(it) }
+    }.getOrNull()
+
+    val drawable = launcherDrawable
+        ?: runCatching { packageManager.getApplicationIcon(packageName) }.getOrNull()
+        ?: return null
+
+    return runCatching {
+        drawable.toBitmap(APP_ICON_SIZE_PX, APP_ICON_SIZE_PX)
+    }.getOrNull()
 }
 
 @DrawableRes
