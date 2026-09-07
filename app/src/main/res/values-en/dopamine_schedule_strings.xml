@@ -6,6 +6,9 @@
     </plurals>
     <string name="dopamine_schedule_description">Selected apps and sites are blocked for the whole day only on the weekdays you choose, until the selected duration ends.</string>
     <string name="dopamine_schedule_terms_how">Choose what to block, which weekdays the block applies to, and the total duration. On selected weekdays the targets stay blocked for the entire day; on unselected weekdays they remain available. The commitment itself cannot be ended early.</string>
+    <string name="dopamine_continue_to_schedule">Continue to days and duration</string>
+    <string name="dopamine_schedule_config_title">Days and duration</string>
+    <string name="dopamine_schedule_config_subtitle">Choose the weekdays when blocking applies and how long the commitment should remain active.</string>
     <string name="dopamine_weekdays_question">Which days of the week do you want to block?</string>
     <string name="dopamine_weekdays_hint">Blocking applies for the whole day only on the selected days.</string>
     <string name="dopamine_weekdays_required">Select at least one day of the week.</string>
