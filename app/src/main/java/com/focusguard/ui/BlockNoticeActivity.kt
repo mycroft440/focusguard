@@ -98,15 +98,19 @@ class BlockNoticeActivity : AppCompatActivity() {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                // Routing failure must never create an unlock capability. Keep the
-                // target closed on the generic surface and record why PASSWORD was
-                // not selected.
+                // An app-routing failure must fail closed without ever inventing a
+                // generic owner for a possible PASSWORD target. Sending the user
+                // home closes the intercepted app and preserves the invariant that
+                // the generic screen never substitutes for password authentication.
                 FocusGuardLogger.logError(
                     "BlockRouter",
-                    "Falha ao resolver superfície para $blockedPackage",
+                    "Falha ao resolver superfície para $blockedPackage; saindo para Home",
                     error
                 )
-                AppBlockSurfacePolicy.Surface.GENERIC_BLOCK
+                if (attemptId == routeAttemptId && !isFinishing && !isDestroyed) {
+                    goHome()
+                }
+                return@launch
             }
 
             launchDestination(sourceIntent, surface, attemptId)
