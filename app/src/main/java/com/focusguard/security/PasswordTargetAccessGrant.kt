@@ -142,14 +142,17 @@ object PasswordTargetAccessGrant {
         websiteExpiryElapsed.keys.filterTo(linkedSetOf(), ::isWebsiteRuleGranted)
 
     /**
-     * Pure policy used by the monitor and unit tests. [visitStartedAt] is the
-     * foreground event that began this authenticated visit. Any later package
-     * background event or foreground transition to another package ends the grant
-     * even if the user reopens the target before the 200 ms poll runs again.
+     * Pure package-level policy used by the monitor and unit tests.
      *
-     * ACTIVITY_STOPPED is kept only as an OEM fallback and only wins while it is
-     * newer than the target's latest RESUMED/FOREGROUND event, avoiding false
-     * relocks during ordinary navigation between activities inside the same app.
+     * A one-visit grant belongs to the application package, not to one Activity.
+     * Browsers commonly switch Activities for History, Downloads, Settings and
+     * similar internal surfaces. Android can emit MOVE_TO_BACKGROUND/STOPPED for
+     * the outgoing Activity even while another Activity from the same package is
+     * already foreground. Those lifecycle events must not relock the app.
+     *
+     * The grant ends only when there is package-level evidence that another
+     * package became foreground. Exit events remain useful as supporting evidence
+     * when the latest foreground package is already known to be non-target.
      */
     internal fun shouldRevokeAppGrant(
         target: String,
@@ -160,16 +163,37 @@ object PasswordTargetAccessGrant {
         if (!targetSeenForeground || target.isBlank() || visitStartedAt == Long.MIN_VALUE) {
             return false
         }
-        if (observation.latestTargetPackageBackgroundAt > visitStartedAt) return true
-        if (observation.latestNonTargetForegroundAt > visitStartedAt) return true
+
+        val latestTargetForegroundAt = observation.latestTargetForegroundAt
+        val latestNonTargetForegroundAt = observation.latestNonTargetForegroundAt
+        val foreground = observation.latestForegroundPackage
+
+        // A newer foreground event from another package is decisive: the visit ended.
         if (
-            observation.latestTargetStoppedAt > visitStartedAt &&
-            observation.latestTargetStoppedAt > observation.latestTargetForegroundAt
+            latestNonTargetForegroundAt > visitStartedAt &&
+            latestNonTargetForegroundAt > latestTargetForegroundAt
         ) {
             return true
         }
-        val foreground = observation.latestForegroundPackage
-        return !foreground.isNullOrBlank() && foreground != target
+
+        // If Android reports the target as the latest foreground package, keep the
+        // grant even when an outgoing Activity from that same package later emitted
+        // BACKGROUND/STOPPED. This is the normal browser internal-navigation shape.
+        if (foreground == target) return false
+
+        if (!foreground.isNullOrBlank() && foreground != target) {
+            return true
+        }
+
+        // OEM fallback: only let package exit events win when there is no evidence
+        // that the target subsequently resumed. This avoids Activity-transition
+        // false positives while still failing closed on incomplete foreground logs.
+        val latestTargetExitAt = maxOf(
+            observation.latestTargetPackageBackgroundAt,
+            observation.latestTargetStoppedAt
+        )
+        return latestTargetExitAt > visitStartedAt &&
+            latestTargetExitAt > latestTargetForegroundAt
     }
 
     private suspend fun monitorSingleAppVisit(context: Context, target: String) {
