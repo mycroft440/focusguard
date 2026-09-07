@@ -54,7 +54,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.focusguard.R
 import com.focusguard.manager.BlockingSessionManager
+import com.focusguard.monetization.MonetizationPolicy
+import com.focusguard.monetization.RewardedGateCoordinator
 import com.focusguard.security.AppUnlockBiometricAuthenticator
+import com.focusguard.security.BiometricOnlyActivationPolicy
 import com.focusguard.security.BlockTargetPolicy
 import com.focusguard.security.PasswordAppUnlockMode
 import com.focusguard.security.PasswordAppUnlockStore
@@ -89,6 +92,12 @@ fun FinalConfigStep(
     }
     val biometricAvailable =
         biometricAvailability == AppUnlockBiometricAuthenticator.Availability.AVAILABLE
+    var biometricAppUnlockEnabled by remember(authManager) {
+        mutableStateOf(authManager.isBiometricAppUnlockEnabled())
+    }
+    val biometricGateTitle = stringResource(R.string.password_app_unlock_quick_biometric_title)
+    val biometricGateDescription =
+        stringResource(R.string.password_app_unlock_biometric_rewarded_desc)
     val acceptedPasswordSites = remember(sites) {
         BlockTargetPolicy.acceptedRulesForSessionType(
             BlockTargetPolicy.SESSION_TYPE_PASSWORD,
@@ -122,6 +131,19 @@ fun FinalConfigStep(
     var hidePatternTrace by rememberSaveable { mutableStateOf(false) }
     var showPatternDialog by remember { mutableStateOf(false) }
     var configError by remember { mutableStateOf<String?>(null) }
+
+    val launchBiometricRewardedGate: () -> Unit = {
+        RewardedGateCoordinator.launch(
+            context = context,
+            requiredAds = MonetizationPolicy.BIOMETRIC_UNLOCK_REWARDED_ADS,
+            title = biometricGateTitle,
+            description = biometricGateDescription
+        ) {
+            authManager.setBiometricAppUnlockEnabled(true)
+            biometricAppUnlockEnabled = true
+            configError = null
+        }
+    }
 
     fun returnToMethodSelection() {
         unlockModeName = null
@@ -186,6 +208,7 @@ fun FinalConfigStep(
                     biometricAvailable = biometricAvailable,
                     onModeSelected = { mode ->
                         unlockModeName = mode.name
+                        biometricAppUnlockEnabled = authManager.isBiometricAppUnlockEnabled()
                         configError = null
                     }
                 )
@@ -307,6 +330,62 @@ fun FinalConfigStep(
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
+
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = DarkBg),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (biometricAppUnlockEnabled) {
+                                            AccentCyan.copy(alpha = 0.42f)
+                                        } else {
+                                            TextHint.copy(alpha = 0.22f)
+                                        }
+                                    ),
+                                    shape = RoundedCornerShape(16.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                biometricGateTitle,
+                                                color = TextPrimary,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
+                                            )
+                                            Spacer(Modifier.height(3.dp))
+                                            Text(
+                                                stringResource(
+                                                    if (biometricAppUnlockEnabled) {
+                                                        R.string.password_app_unlock_quick_biometric_desc
+                                                    } else {
+                                                        R.string.password_app_unlock_biometric_rewarded_desc
+                                                    }
+                                                ),
+                                                color = TextSecondary,
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                        Switch(
+                                            checked = biometricAppUnlockEnabled,
+                                            enabled = biometricAvailable,
+                                            onCheckedChange = { enable ->
+                                                if (enable) {
+                                                    launchBiometricRewardedGate()
+                                                } else {
+                                                    authManager.setBiometricAppUnlockEnabled(false)
+                                                    biometricAppUnlockEnabled = false
+                                                }
+                                                configError = null
+                                            }
+                                        )
+                                    }
+                                }
+
                                 if (!biometricAvailable) {
                                     Text(
                                         stringResource(
@@ -350,6 +429,14 @@ fun FinalConfigStep(
                             val biometricReadyNow =
                                 biometricAvailabilityNow ==
                                     AppUnlockBiometricAuthenticator.Availability.AVAILABLE
+                            val biometricAppUnlockEnabledNow =
+                                authManager.isBiometricAppUnlockEnabled()
+                            biometricAppUnlockEnabled = biometricAppUnlockEnabledNow
+                            val biometricOnlyMissingRequirement =
+                                BiometricOnlyActivationPolicy.missingRequirement(
+                                    androidBiometricAvailable = biometricReadyNow,
+                                    appBiometricUnlockEnabled = biometricAppUnlockEnabledNow
+                                )
                             val validationError = when (selectedMode) {
                                 PasswordAppUnlockMode.PASSWORD -> when {
                                     !PasswordAppUnlockStore.isPasswordValid(unlockPassword) ->
@@ -373,9 +460,18 @@ fun FinalConfigStep(
                                     )
                                 } else null
 
-                                PasswordAppUnlockMode.BIOMETRIC_ONLY -> if (!biometricReadyNow) {
-                                    context.getString(R.string.password_app_unlock_biometric_required)
-                                } else null
+                                PasswordAppUnlockMode.BIOMETRIC_ONLY ->
+                                    when (biometricOnlyMissingRequirement) {
+                                        BiometricOnlyActivationPolicy.MissingRequirement.ANDROID_BIOMETRIC ->
+                                            context.getString(
+                                                R.string.password_app_unlock_biometric_required
+                                            )
+
+                                        BiometricOnlyActivationPolicy.MissingRequirement.APP_BIOMETRIC_UNLOCK ->
+                                            biometricGateDescription
+
+                                        null -> null
+                                    }
                             }
                             if (validationError != null) {
                                 configError = validationError
@@ -389,11 +485,7 @@ fun FinalConfigStep(
                             }
 
                             val effectiveBiometricEnabled =
-                                selectedMode == PasswordAppUnlockMode.BIOMETRIC_ONLY ||
-                                    (
-                                        authManager.isBiometricAppUnlockEnabled() &&
-                                            biometricReadyNow
-                                        )
+                                biometricAppUnlockEnabledNow && biometricReadyNow
 
                             isSaving = true
                             scope.launch {
