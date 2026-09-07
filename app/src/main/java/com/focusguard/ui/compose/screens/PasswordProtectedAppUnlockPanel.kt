@@ -64,6 +64,8 @@ private const val BIOMETRIC_FAILURES_BEFORE_FALLBACK = 2
  *
  * The target credential is independent from the master credential. A successful
  * unlock grants a temporary visit and never edits or deletes the PASSWORD block.
+ * Cancelling authentication returns control to the owner Activity so the protected
+ * target can be closed instead of falling back to a generic block surface.
  */
 @Composable
 internal fun PasswordProtectedTargetUnlockPanel(
@@ -71,7 +73,8 @@ internal fun PasswordProtectedTargetUnlockPanel(
     blockedDomain: String?,
     authManager: AuthManager,
     sessionManager: BlockingSessionManager,
-    onUnlocked: () -> Unit
+    onUnlocked: () -> Unit,
+    onCancelled: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = context as? FragmentActivity
@@ -213,14 +216,17 @@ internal fun PasswordProtectedTargetUnlockPanel(
     fun launchBiometric() {
         val host = activity ?: run {
             error = failureMessage
+            onCancelled()
             return
         }
         val latest = store.getTarget(targetId) ?: run {
             error = failureMessage
+            onCancelled()
             return
         }
         if (!latest.biometricEnabled || !biometricAvailable || verifying) {
             error = failureMessage
+            if (!verifying) onCancelled()
             return
         }
 
@@ -267,9 +273,17 @@ internal fun PasswordProtectedTargetUnlockPanel(
                     // on the alternate credential instead of having to tap again.
                     error = null
                     showCredentialDialog = true
+                } else {
+                    onCancelled()
                 }
             }
         )
+    }
+
+    LaunchedEffect(config, targetId) {
+        if (targetId == null || config == null) {
+            onCancelled()
+        }
     }
 
     LaunchedEffect(config, biometricAvailable) {
@@ -405,6 +419,7 @@ internal fun PasswordProtectedTargetUnlockPanel(
                     if (!verifying) {
                         showCredentialDialog = false
                         error = null
+                        onCancelled()
                     }
                 },
                 onSubmit = { password ->
@@ -425,6 +440,7 @@ internal fun PasswordProtectedTargetUnlockPanel(
                     if (!verifying) {
                         showCredentialDialog = false
                         error = null
+                        onCancelled()
                     }
                 },
                 onSubmit = { pattern, reset ->
@@ -449,13 +465,15 @@ internal fun PasswordProtectedAppUnlockPanel(
     blockedPackage: String,
     authManager: AuthManager,
     sessionManager: BlockingSessionManager,
-    onUnlocked: () -> Unit
+    onUnlocked: () -> Unit,
+    onCancelled: () -> Unit = {}
 ) = PasswordProtectedTargetUnlockPanel(
     blockedPackage = blockedPackage,
     blockedDomain = null,
     authManager = authManager,
     sessionManager = sessionManager,
-    onUnlocked = onUnlocked
+    onUnlocked = onUnlocked,
+    onCancelled = onCancelled
 )
 
 @Composable
