@@ -2,10 +2,8 @@
 
 package com.focusguard.ui.compose.screens
 
-import android.graphics.drawable.Drawable
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,25 +42,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.graphics.drawable.toBitmap
 import com.focusguard.R
+import com.focusguard.ui.compose.components.FocusGuardAppIcon
 import com.focusguard.ui.compose.theme.AccentCyan
 import com.focusguard.ui.compose.theme.AccentCyanInk
 import com.focusguard.ui.compose.theme.CardBorder
@@ -77,8 +71,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 private enum class AppLimitEditorStep {
     DETAILS,
@@ -104,7 +96,6 @@ fun AppLimitRedesignedSheet(
     onDismiss: () -> Unit,
     onSave: (Int?, Boolean, String, String?, Long?) -> Unit
 ) {
-    val context = LocalContext.current
     val editMode = app.currentLimitMinutes != null
     val now = System.currentTimeMillis()
     val activeExistingRuleEnd = app.lockUntilTimestamp?.takeIf { it > now }
@@ -139,13 +130,6 @@ fun AppLimitRedesignedSheet(
     }
     var durationEdited by remember(app.packageName, app.lockUntilTimestamp) {
         mutableStateOf(false)
-    }
-    var iconDrawable by remember(app.packageName) { mutableStateOf<Drawable?>(null) }
-
-    LaunchedEffect(app.packageName) {
-        iconDrawable = withContext(Dispatchers.IO) {
-            runCatching { context.packageManager.getApplicationIcon(app.packageName) }.getOrNull()
-        }
     }
 
     val enteredMinutes = dailyMinutes.toIntOrNull() ?: 0
@@ -205,8 +189,8 @@ fun AppLimitRedesignedSheet(
                 .heightIn(max = 760.dp)
         ) {
             AppLimitSheetHeader(
+                packageName = app.packageName,
                 appName = app.appName,
-                iconDrawable = iconDrawable,
                 step = step
             )
             HorizontalDivider(color = CardBorder, thickness = 1.dp)
@@ -269,8 +253,8 @@ fun AppLimitRedesignedSheet(
 
 @Composable
 private fun AppLimitSheetHeader(
+    packageName: String,
     appName: String,
-    iconDrawable: Drawable?,
     step: AppLimitEditorStep
 ) {
     Row(
@@ -280,34 +264,13 @@ private fun AppLimitSheetHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(13.dp)
     ) {
-        if (iconDrawable != null) {
-            val bitmap = remember(iconDrawable) {
-                iconDrawable.toBitmap(96, 96).asImageBitmap()
-            }
-            Image(
-                bitmap = bitmap,
-                contentDescription = appName,
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(RoundedCornerShape(12.dp))
-            )
-        } else {
-            Surface(
-                modifier = Modifier.size(42.dp),
-                shape = RoundedCornerShape(12.dp),
-                color = AccentCyan.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, AccentCyan.copy(alpha = 0.28f))
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        appName.take(2).uppercase(),
-                        color = AccentCyan,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                }
-            }
-        }
+        FocusGuardAppIcon(
+            packageName = packageName,
+            appName = appName,
+            modifier = Modifier.size(42.dp),
+            cornerRadius = 12.dp,
+            allowRemoteFallback = true
+        )
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
