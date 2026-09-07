@@ -438,18 +438,30 @@ object PasswordTargetAccessGrant {
         target: String,
         exitObservation: AppVisitObservation? = null
     ) {
-        val existed = grantedPackages.remove(target)
-        if (!existed) return
-
-        if (exitObservation != null) {
-            recentAppExits[target] = RecentAppExit(
+        val exitMarker = exitObservation?.let { observation ->
+            RecentAppExit(
                 markedAtElapsedMillis = SystemClock.elapsedRealtime(),
                 queryFromWallClockMillis = (
                     System.currentTimeMillis() - POST_EXIT_USAGE_LOOKBACK_MILLIS
                 ).coerceAtLeast(0L),
-                lastKnownForegroundPackage = exitObservation.latestForegroundPackage
+                lastKnownForegroundPackage = observation.latestForegroundPackage
             )
-        } else {
+        }
+
+        // Publish the exit marker before dropping the grant. Accessibility runs on
+        // another thread and must never observe the impossible intermediate state
+        // "grant gone, no exit marker" while Android is dispatching stale exit events.
+        if (exitMarker != null) {
+            recentAppExits[target] = exitMarker
+        }
+
+        val existed = grantedPackages.remove(target)
+        if (!existed) {
+            if (exitMarker != null) recentAppExits.remove(target, exitMarker)
+            return
+        }
+
+        if (exitMarker == null) {
             recentAppExits.remove(target)
         }
         reconcileProtection()
