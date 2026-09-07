@@ -19,17 +19,42 @@ internal class AppBlockSurfaceResolver(
     context: Context,
     private val sessionManager: BlockingSessionManager
 ) {
+    data class Resolution(
+        val surface: AppBlockSurfacePolicy.Surface,
+        /**
+         * TIME commitments and active usage limits own a closed target: after the
+         * interception succeeds the target Activity/task must not be preserved for
+         * a later visit. A plain PASSWORD session is the opposite because its
+         * one-visit grant intentionally returns to the same target task.
+         */
+        val closeTargetAfterInterception: Boolean
+    )
+
     private val appContext = context.applicationContext
 
     suspend fun resolve(
         blockedPackage: String?,
         strictPomodoroActive: Boolean
-    ): AppBlockSurfacePolicy.Surface {
+    ): AppBlockSurfacePolicy.Surface = resolveAttempt(
+        blockedPackage = blockedPackage,
+        strictPomodoroActive = strictPomodoroActive
+    ).surface
+
+    suspend fun resolveAttempt(
+        blockedPackage: String?,
+        strictPomodoroActive: Boolean
+    ): Resolution {
         val packageName = blockedPackage?.takeIf(String::isNotBlank)
-            ?: return AppBlockSurfacePolicy.Surface.GENERIC_BLOCK
+            ?: return Resolution(
+                surface = AppBlockSurfacePolicy.Surface.GENERIC_BLOCK,
+                closeTargetAfterInterception = false
+            )
 
         if (strictPomodoroActive) {
-            return AppBlockSurfacePolicy.Surface.GENERIC_BLOCK
+            return Resolution(
+                surface = AppBlockSurfacePolicy.Surface.GENERIC_BLOCK,
+                closeTargetAfterInterception = false
+            )
         }
 
         // This lookup gives password-protected daily limits precedence over a
@@ -40,14 +65,37 @@ internal class AppBlockSurfaceResolver(
             blockedDomain = null,
             strictPomodoroActive = false
         )
+
+        // UsageImpactRouter is also the canonical detector for a live TIME
+        // commitment and for a non-password usage-limit intervention. A PASSWORD
+        // usage limit is intentionally absent from that metrics route, but its
+        // credential origin still marks it as a usage-limit closure below.
+        val timedOrUsageInterventionBlocksTarget =
+            if (
+                credentialOrigin ==
+                BiometricAppUnlockPolicy.BlockOrigin.USAGE_LIMIT_PASSWORD_UNLOCK
+            ) {
+                false
+            } else {
+                UsageImpactRouter.shouldShowForBlockedApp(appContext, packageName)
+            }
+
         if (credentialOrigin != BiometricAppUnlockPolicy.BlockOrigin.PASSWORD_SESSION) {
-            return AppBlockSurfacePolicy.decide(
-                AppBlockSurfacePolicy.Facts(
-                    strictPomodoro = false,
-                    focusModeBlocksTarget = false,
-                    dopamineFastBlocksTarget = false,
-                    activeUsageLimitBlocksTarget = false,
-                    credentialOrigin = credentialOrigin
+            return Resolution(
+                surface = AppBlockSurfacePolicy.decide(
+                    AppBlockSurfacePolicy.Facts(
+                        strictPomodoro = false,
+                        focusModeBlocksTarget = false,
+                        dopamineFastBlocksTarget = false,
+                        activeUsageLimitBlocksTarget = false,
+                        credentialOrigin = credentialOrigin
+                    )
+                ),
+                closeTargetAfterInterception = shouldCloseTargetAfterInterception(
+                    credentialOrigin = credentialOrigin,
+                    timedOrUsageInterventionBlocksTarget =
+                        timedOrUsageInterventionBlocksTarget,
+                    dopamineFastBlocksTarget = false
                 )
             )
         }
@@ -58,7 +106,8 @@ internal class AppBlockSurfaceResolver(
             ?.contains(packageName) == true
 
         // A legacy database can contain a PASSWORD session overlapping a TIME
-        // commitment. Keep that target on the non-interactive blocking surface.
+        // commitment. Keep that target on the non-interactive blocking surface and
+        // close the target rather than preserving the PASSWORD visit task.
         val dopamineFastBlocksTarget = sessionManager.getBlockOverview()
             .dopamineFastEntries
             .any { entry -> !entry.isWebsite && entry.identifier == packageName }
@@ -66,19 +115,35 @@ internal class AppBlockSurfaceResolver(
         // UsageImpactRouter intentionally ignores PASSWORD-mode limits. Those were
         // already handled by credentialUnlockOrigin above. Here it detects active
         // non-password/time limits that may legally coexist with a PASSWORD session.
-        val activeUsageLimitBlocksTarget = UsageImpactRouter.shouldShowForBlockedApp(
-            appContext,
-            packageName
-        )
+        val activeUsageLimitBlocksTarget = timedOrUsageInterventionBlocksTarget
 
-        return AppBlockSurfacePolicy.decide(
-            AppBlockSurfacePolicy.Facts(
-                strictPomodoro = false,
-                focusModeBlocksTarget = focusModeBlocksTarget,
-                dopamineFastBlocksTarget = dopamineFastBlocksTarget,
-                activeUsageLimitBlocksTarget = activeUsageLimitBlocksTarget,
-                credentialOrigin = credentialOrigin
+        return Resolution(
+            surface = AppBlockSurfacePolicy.decide(
+                AppBlockSurfacePolicy.Facts(
+                    strictPomodoro = false,
+                    focusModeBlocksTarget = focusModeBlocksTarget,
+                    dopamineFastBlocksTarget = dopamineFastBlocksTarget,
+                    activeUsageLimitBlocksTarget = activeUsageLimitBlocksTarget,
+                    credentialOrigin = credentialOrigin
+                )
+            ),
+            closeTargetAfterInterception = shouldCloseTargetAfterInterception(
+                credentialOrigin = credentialOrigin,
+                timedOrUsageInterventionBlocksTarget = activeUsageLimitBlocksTarget,
+                dopamineFastBlocksTarget = dopamineFastBlocksTarget
             )
         )
+    }
+
+    companion object {
+        internal fun shouldCloseTargetAfterInterception(
+            credentialOrigin: BiometricAppUnlockPolicy.BlockOrigin?,
+            timedOrUsageInterventionBlocksTarget: Boolean,
+            dopamineFastBlocksTarget: Boolean
+        ): Boolean =
+            credentialOrigin ==
+                BiometricAppUnlockPolicy.BlockOrigin.USAGE_LIMIT_PASSWORD_UNLOCK ||
+                timedOrUsageInterventionBlocksTarget ||
+                dopamineFastBlocksTarget
     }
 }
