@@ -30,13 +30,17 @@ object PasswordTargetAccessGrant {
     private const val APP_POLL_MILLIS = 200L
     private const val EVENT_LOOKBACK_MILLIS = 30_000L
     private const val WEBSITE_GRANT_TIMEOUT_MILLIS = 5 * 60_000L
+    private const val INTERNAL_ACTIVITY_HANDOFF_WINDOW_MILLIS = 2_000L
 
     internal data class AppVisitObservation(
         val latestForegroundPackage: String?,
         val latestTargetForegroundAt: Long,
         val latestNonTargetForegroundAt: Long,
         val latestTargetPackageBackgroundAt: Long,
-        val latestTargetStoppedAt: Long
+        val latestTargetStoppedAt: Long,
+        val latestTargetForegroundClassName: String? = null,
+        val latestTargetBackgroundClassName: String? = null,
+        val latestTargetStoppedClassName: String? = null
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -142,17 +146,13 @@ object PasswordTargetAccessGrant {
         websiteExpiryElapsed.keys.filterTo(linkedSetOf(), ::isWebsiteRuleGranted)
 
     /**
-     * Pure package-level policy used by the monitor and unit tests.
+     * Pure one-visit policy used by the monitor and unit tests.
      *
-     * A one-visit grant belongs to the application package, not to one Activity.
-     * Browsers commonly switch Activities for History, Downloads, Settings and
-     * similar internal surfaces. Android can emit MOVE_TO_BACKGROUND/STOPPED for
-     * the outgoing Activity even while another Activity from the same package is
-     * already foreground. Those lifecycle events must not relock the app.
-     *
-     * The grant ends only when there is package-level evidence that another
-     * package became foreground. Exit events remain useful as supporting evidence
-     * when the latest foreground package is already known to be non-target.
+     * A visit belongs to the application package, while UsageEvents also carries
+     * Activity class names. That extra component identity lets us distinguish a
+     * browser's internal Activity handoff (BrowserActivity -> HistoryActivity) from
+     * leaving and reopening the same Activity. We therefore keep legitimate
+     * History/Downloads/Settings navigation without weakening the one-visit rule.
      */
     internal fun shouldRevokeAppGrant(
         target: String,
@@ -164,36 +164,57 @@ object PasswordTargetAccessGrant {
             return false
         }
 
-        val latestTargetForegroundAt = observation.latestTargetForegroundAt
-        val latestNonTargetForegroundAt = observation.latestNonTargetForegroundAt
+        // Seeing any other package in foreground after this visit started is a
+        // definitive boundary, even if the target was reopened before the next poll.
+        if (observation.latestNonTargetForegroundAt > visitStartedAt) return true
+
+        if (observation.latestTargetPackageBackgroundAt > visitStartedAt) {
+            val internalHandoff = isInternalTargetActivityHandoff(
+                target = target,
+                observation = observation,
+                exitAt = observation.latestTargetPackageBackgroundAt,
+                exitClassName = observation.latestTargetBackgroundClassName
+            )
+            if (!internalHandoff) return true
+        }
+
+        if (observation.latestTargetStoppedAt > visitStartedAt) {
+            val newerTargetForeground =
+                observation.latestTargetForegroundAt > observation.latestTargetStoppedAt
+            val internalHandoff = isInternalTargetActivityHandoff(
+                target = target,
+                observation = observation,
+                exitAt = observation.latestTargetStoppedAt,
+                exitClassName = observation.latestTargetStoppedClassName
+            )
+            if (!newerTargetForeground && !internalHandoff) return true
+        }
+
         val foreground = observation.latestForegroundPackage
+        return !foreground.isNullOrBlank() && foreground != target
+    }
 
-        // A newer foreground event from another package is decisive: the visit ended.
-        if (
-            latestNonTargetForegroundAt > visitStartedAt &&
-            latestNonTargetForegroundAt > latestTargetForegroundAt
-        ) {
-            return true
+    private fun isInternalTargetActivityHandoff(
+        target: String,
+        observation: AppVisitObservation,
+        exitAt: Long,
+        exitClassName: String?
+    ): Boolean {
+        if (observation.latestForegroundPackage != target) return false
+        val foregroundAt = observation.latestTargetForegroundAt
+        if (foregroundAt == Long.MIN_VALUE || exitAt == Long.MIN_VALUE) return false
+
+        val fromClass = exitClassName?.takeIf(String::isNotBlank) ?: return false
+        val toClass = observation.latestTargetForegroundClassName
+            ?.takeIf(String::isNotBlank) ?: return false
+        if (fromClass == toClass) return false
+
+        val distance = if (foregroundAt >= exitAt) {
+            foregroundAt - exitAt
+        } else {
+            exitAt - foregroundAt
         }
-
-        // If Android reports the target as the latest foreground package, keep the
-        // grant even when an outgoing Activity from that same package later emitted
-        // BACKGROUND/STOPPED. This is the normal browser internal-navigation shape.
-        if (foreground == target) return false
-
-        if (!foreground.isNullOrBlank() && foreground != target) {
-            return true
-        }
-
-        // OEM fallback: only let package exit events win when there is no evidence
-        // that the target subsequently resumed. This avoids Activity-transition
-        // false positives while still failing closed on incomplete foreground logs.
-        val latestTargetExitAt = maxOf(
-            observation.latestTargetPackageBackgroundAt,
-            observation.latestTargetStoppedAt
-        )
-        return latestTargetExitAt > visitStartedAt &&
-            latestTargetExitAt > latestTargetForegroundAt
+        return distance <= INTERNAL_ACTIVITY_HANDOFF_WINDOW_MILLIS
     }
 
     private suspend fun monitorSingleAppVisit(context: Context, target: String) {
@@ -212,13 +233,25 @@ object PasswordTargetAccessGrant {
                     notBeforeMillis = grantedAtWallClock
                 )
                 if (!targetSeenForeground) {
-                    val latestTargetExit = maxOf(
-                        observation.latestTargetPackageBackgroundAt,
-                        observation.latestTargetStoppedAt
-                    )
+                    val backgroundAt = observation.latestTargetPackageBackgroundAt
+                    val stoppedAt = observation.latestTargetStoppedAt
+                    val latestTargetExit = maxOf(backgroundAt, stoppedAt)
+                    val latestExitClassName = if (backgroundAt >= stoppedAt) {
+                        observation.latestTargetBackgroundClassName
+                    } else {
+                        observation.latestTargetStoppedClassName
+                    }
                     val targetIsCurrentlyForeground =
                         observation.latestForegroundPackage == target &&
-                            observation.latestTargetForegroundAt >= latestTargetExit
+                            (
+                                observation.latestTargetForegroundAt >= latestTargetExit ||
+                                    isInternalTargetActivityHandoff(
+                                        target = target,
+                                        observation = observation,
+                                        exitAt = latestTargetExit,
+                                        exitClassName = latestExitClassName
+                                    )
+                                )
                     if (targetIsCurrentlyForeground) {
                         targetSeenForeground = true
                         visitStartedAt = observation.latestTargetForegroundAt
@@ -265,6 +298,9 @@ object PasswordTargetAccessGrant {
         var latestNonTargetForegroundAt = Long.MIN_VALUE
         var latestTargetPackageBackgroundAt = Long.MIN_VALUE
         var latestTargetStoppedAt = Long.MIN_VALUE
+        var latestTargetForegroundClassName: String? = null
+        var latestTargetBackgroundClassName: String? = null
+        var latestTargetStoppedClassName: String? = null
 
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
@@ -277,25 +313,29 @@ object PasswordTargetAccessGrant {
                 latestForegroundPackage = event.packageName
             }
             if (foregroundEvent && event.packageName == target) {
-                latestTargetForegroundAt = maxOf(latestTargetForegroundAt, event.timeStamp)
+                if (event.timeStamp >= latestTargetForegroundAt) {
+                    latestTargetForegroundAt = event.timeStamp
+                    latestTargetForegroundClassName = event.className
+                }
             } else if (foregroundEvent && event.packageName != target) {
                 latestNonTargetForegroundAt = maxOf(latestNonTargetForegroundAt, event.timeStamp)
             }
 
             if (
                 event.packageName == target &&
-                event.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND
+                event.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND &&
+                event.timeStamp >= latestTargetPackageBackgroundAt
             ) {
-                latestTargetPackageBackgroundAt = maxOf(
-                    latestTargetPackageBackgroundAt,
-                    event.timeStamp
-                )
+                latestTargetPackageBackgroundAt = event.timeStamp
+                latestTargetBackgroundClassName = event.className
             }
             if (
                 event.packageName == target &&
-                event.eventType == UsageEvents.Event.ACTIVITY_STOPPED
+                event.eventType == UsageEvents.Event.ACTIVITY_STOPPED &&
+                event.timeStamp >= latestTargetStoppedAt
             ) {
-                latestTargetStoppedAt = maxOf(latestTargetStoppedAt, event.timeStamp)
+                latestTargetStoppedAt = event.timeStamp
+                latestTargetStoppedClassName = event.className
             }
         }
 
@@ -304,7 +344,10 @@ object PasswordTargetAccessGrant {
             latestTargetForegroundAt = latestTargetForegroundAt,
             latestNonTargetForegroundAt = latestNonTargetForegroundAt,
             latestTargetPackageBackgroundAt = latestTargetPackageBackgroundAt,
-            latestTargetStoppedAt = latestTargetStoppedAt
+            latestTargetStoppedAt = latestTargetStoppedAt,
+            latestTargetForegroundClassName = latestTargetForegroundClassName,
+            latestTargetBackgroundClassName = latestTargetBackgroundClassName,
+            latestTargetStoppedClassName = latestTargetStoppedClassName
         )
     }
 
