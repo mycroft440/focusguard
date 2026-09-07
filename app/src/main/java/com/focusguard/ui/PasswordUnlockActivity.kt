@@ -62,6 +62,8 @@ import kotlinx.coroutines.delay
  *
  * This Activity owns target password, pattern, biometric fallback, and the
  * one-visit grant. Generic hard-block UI has no access to any of those states.
+ * Cancelling authentication exits to Home so the protected app is no longer
+ * visible behind the authentication surface.
  */
 @AndroidEntryPoint
 class PasswordUnlockActivity : AppCompatActivity() {
@@ -139,7 +141,8 @@ class PasswordUnlockActivity : AppCompatActivity() {
                     blockingSessionManager = blockingSessionManager,
                     onUnlocked = {
                         returnToAuthenticatedTarget(packageName)
-                    }
+                    },
+                    onCancelled = ::goHome
                 )
             }
         }
@@ -272,13 +275,22 @@ private fun PasswordUnlockContent(
     authenticationReady: Boolean,
     authManager: AuthManager,
     blockingSessionManager: BlockingSessionManager,
-    onUnlocked: () -> Unit
+    onUnlocked: () -> Unit,
+    onCancelled: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val config = remember(blockAttemptId, blockedPackage) {
         PasswordAppUnlockStore(context).get(blockedPackage)
     }
     var unlocked by remember(blockAttemptId) { mutableStateOf(false) }
+
+    // A malformed/missing PASSWORD target must not strand the user on a dead
+    // authentication screen and must never fall through to the generic block UI.
+    LaunchedEffect(blockAttemptId, blockedPackage, config) {
+        if (blockedPackage.isNullOrBlank() || config == null) {
+            onCancelled()
+        }
+    }
 
     Box(
         modifier = Modifier.fillMaxSize().background(DarkBg),
@@ -373,7 +385,8 @@ private fun PasswordUnlockContent(
                         blockedDomain = null,
                         authManager = authManager,
                         sessionManager = blockingSessionManager,
-                        onUnlocked = { unlocked = true }
+                        onUnlocked = { unlocked = true },
+                        onCancelled = onCancelled
                     )
                 }
             }
