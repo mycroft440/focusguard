@@ -1,6 +1,9 @@
 package com.focusguard.security
 
 import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -14,10 +17,50 @@ import androidx.fragment.app.FragmentActivity
  */
 object AppUnlockBiometricAuthenticator {
 
-    fun isAvailable(context: Context): Boolean {
-        return BiometricManager.from(context.applicationContext)
-            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) ==
-            BiometricManager.BIOMETRIC_SUCCESS
+    enum class Availability {
+        AVAILABLE,
+        ENROLLMENT_REQUIRED,
+        UNAVAILABLE
+    }
+
+    fun availability(context: Context): Availability {
+        val result = BiometricManager.from(context.applicationContext)
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+        return availabilityFromCanAuthenticateResult(result)
+    }
+
+    fun isAvailable(context: Context): Boolean = availability(context) == Availability.AVAILABLE
+
+    internal fun availabilityFromCanAuthenticateResult(result: Int): Availability = when (result) {
+        BiometricManager.BIOMETRIC_SUCCESS -> Availability.AVAILABLE
+        BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> Availability.ENROLLMENT_REQUIRED
+        else -> Availability.UNAVAILABLE
+    }
+
+    /**
+     * Returns the narrowest Android enrollment surface available on this device.
+     * Android 11+ receives the strong-biometric requirement explicitly. Older
+     * versions fall back to the fingerprint enrollment action and, on OEMs that
+     * do not expose it, to the general security settings screen.
+     */
+    fun createEnrollmentIntent(context: Context): Intent {
+        val candidates = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                add(
+                    Intent(Settings.ACTION_BIOMETRIC_ENROLL).putExtra(
+                        Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED,
+                        BiometricManager.Authenticators.BIOMETRIC_STRONG
+                    )
+                )
+            }
+            add(Intent("android.settings.FINGERPRINT_ENROLL"))
+            add(Intent(Settings.ACTION_SECURITY_SETTINGS))
+        }
+
+        return candidates.firstOrNull { intent ->
+            runCatching { intent.resolveActivity(context.packageManager) != null }
+                .getOrDefault(false)
+        } ?: Intent(Settings.ACTION_SECURITY_SETTINGS)
     }
 
     /**
