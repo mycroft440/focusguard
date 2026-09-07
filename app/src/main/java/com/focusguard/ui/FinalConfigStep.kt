@@ -1,6 +1,8 @@
 package com.focusguard.ui
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -82,9 +84,11 @@ fun FinalConfigStep(
     val scope = rememberCoroutineScope()
     val sessionManager = remember(context) { BlockingSessionManager.getInstance(context) }
     val appUnlockStore = remember(context) { PasswordAppUnlockStore(context) }
-    val biometricAvailable = remember(context) {
-        AppUnlockBiometricAuthenticator.isAvailable(context)
+    var biometricAvailability by remember(context) {
+        mutableStateOf(AppUnlockBiometricAuthenticator.availability(context))
     }
+    val biometricAvailable =
+        biometricAvailability == AppUnlockBiometricAuthenticator.Availability.AVAILABLE
     val acceptedPasswordSites = remember(sites) {
         BlockTargetPolicy.acceptedRulesForSessionType(
             BlockTargetPolicy.SESSION_TYPE_PASSWORD,
@@ -104,6 +108,11 @@ fun FinalConfigStep(
     var unlockModeName by rememberSaveable { mutableStateOf<String?>(null) }
     val unlockMode = unlockModeName?.let { modeName ->
         runCatching { PasswordAppUnlockMode.valueOf(modeName) }.getOrNull()
+    }
+    val biometricEnrollmentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        biometricAvailability = AppUnlockBiometricAuthenticator.availability(context)
     }
 
     // Credenciais são intencionalmente mantidas apenas em memória e nunca no SavedState.
@@ -298,6 +307,30 @@ fun FinalConfigStep(
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
+                                if (!biometricAvailable) {
+                                    Text(
+                                        stringResource(
+                                            R.string.password_app_unlock_biometric_setup_before_activation
+                                        ),
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                    OutlinedButton(
+                                        onClick = {
+                                            biometricEnrollmentLauncher.launch(
+                                                AppUnlockBiometricAuthenticator
+                                                    .createEnrollmentIntent(context)
+                                            )
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            stringResource(
+                                                R.string.password_app_unlock_biometric_reactivate_action
+                                            )
+                                        )
+                                    }
+                                }
                             }
                         }
 
@@ -311,6 +344,12 @@ fun FinalConfigStep(
                     onClick = {
                         if (!isSaving) {
                             val selectedMode = unlockMode
+                            val biometricAvailabilityNow =
+                                AppUnlockBiometricAuthenticator.availability(context)
+                            biometricAvailability = biometricAvailabilityNow
+                            val biometricReadyNow =
+                                biometricAvailabilityNow ==
+                                    AppUnlockBiometricAuthenticator.Availability.AVAILABLE
                             val validationError = when (selectedMode) {
                                 PasswordAppUnlockMode.PASSWORD -> when {
                                     !PasswordAppUnlockStore.isPasswordValid(unlockPassword) ->
@@ -334,7 +373,7 @@ fun FinalConfigStep(
                                     )
                                 } else null
 
-                                PasswordAppUnlockMode.BIOMETRIC_ONLY -> if (!biometricAvailable) {
+                                PasswordAppUnlockMode.BIOMETRIC_ONLY -> if (!biometricReadyNow) {
                                     context.getString(R.string.password_app_unlock_biometric_required)
                                 } else null
                             }
@@ -353,7 +392,7 @@ fun FinalConfigStep(
                                 selectedMode == PasswordAppUnlockMode.BIOMETRIC_ONLY ||
                                     (
                                         authManager.isBiometricAppUnlockEnabled() &&
-                                            biometricAvailable
+                                            biometricReadyNow
                                         )
 
                             isSaving = true
@@ -465,7 +504,6 @@ private fun UnlockModeSelectionPage(
             )
             UnlockModeChoiceButton(
                 label = stringResource(R.string.password_app_unlock_mode_biometric_only),
-                enabled = biometricAvailable,
                 onClick = { onModeSelected(PasswordAppUnlockMode.BIOMETRIC_ONLY) }
             )
 
