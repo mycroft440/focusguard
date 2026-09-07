@@ -45,6 +45,7 @@ import com.focusguard.manager.BlockingSessionManager
 import com.focusguard.security.AppUnlockBiometricAuthenticator
 import com.focusguard.security.AuthManager
 import com.focusguard.security.CurtainDestinationReadyCoordinator
+import com.focusguard.security.IntruderAttemptCaptureController
 import com.focusguard.security.PasswordAppUnlockMode
 import com.focusguard.security.PasswordAppUnlockStore
 import com.focusguard.security.SafeSurfaceReadinessPolicy
@@ -65,10 +66,10 @@ import kotlinx.coroutines.delay
 /**
  * Exclusive authentication surface for PASSWORD-session app targets.
  *
- * This Activity owns target password, pattern, biometric fallback, and the
- * one-visit grant. Generic hard-block UI has no access to any of those states.
- * Cancelling authentication exits to Home so the protected app is no longer
- * visible behind the authentication surface.
+ * This Activity owns target password, pattern, biometric fallback, the one-visit
+ * grant, and the lifecycle of the optional intruder selfie. Generic hard-block UI
+ * has no access to any of those states. Cancelling authentication exits to Home so
+ * the protected app is no longer visible behind the authentication surface.
  */
 @AndroidEntryPoint
 class PasswordUnlockActivity : AppCompatActivity() {
@@ -76,6 +77,7 @@ class PasswordUnlockActivity : AppCompatActivity() {
     @Inject lateinit var authManager: AuthManager
     @Inject lateinit var blockingSessionManager: BlockingSessionManager
 
+    private lateinit var intruderCaptureController: IntruderAttemptCaptureController
     private var blockedPackage: String? = null
     private var noticeDrawn = false
     private var activityResumed = false
@@ -85,8 +87,16 @@ class PasswordUnlockActivity : AppCompatActivity() {
     private var blockAttemptId = 0L
     private var authenticationReady by mutableStateOf(false)
 
+    // Accessibility can send more than one intent while the same unlock surface is
+    // visible. The selfie must represent the real access attempt, not each event.
+    private var intruderAttemptId = 0L
+    private var intruderAttemptPackage: String? = null
+    private var intruderAttemptBackgrounded = false
+    private var intruderAttemptAuthenticated = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        intruderCaptureController = IntruderAttemptCaptureController(this, authManager)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 goHome()
@@ -105,11 +115,21 @@ class PasswordUnlockActivity : AppCompatActivity() {
         super.onResume()
         activityResumed = true
         acknowledgePendingNoticeIfPresented()
+        if (intruderAttemptId > 0L && !intruderAttemptAuthenticated) {
+            intruderCaptureController.startCaptureIfEligible(intruderAttemptId)
+        }
     }
 
     override fun onPause() {
         activityResumed = false
         super.onPause()
+    }
+
+    override fun onStop() {
+        if (!intruderAttemptAuthenticated) {
+            intruderAttemptBackgrounded = true
+        }
+        super.onStop()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -127,6 +147,7 @@ class PasswordUnlockActivity : AppCompatActivity() {
             0L
         )
         val attemptId = ++blockAttemptId
+        val accessAttemptId = beginOrContinueIntruderAttempt(packageName)
 
         blockedPackage = packageName
         pendingCurtainGeneration = curtainGeneration
@@ -144,6 +165,15 @@ class PasswordUnlockActivity : AppCompatActivity() {
                     authenticationReady = authenticationReady,
                     authManager = authManager,
                     blockingSessionManager = blockingSessionManager,
+                    onAuthenticationSucceeded = {
+                        intruderCaptureController.markAuthenticated(accessAttemptId)
+                        if (accessAttemptId == intruderAttemptId) {
+                            intruderAttemptAuthenticated = true
+                        }
+                    },
+                    onCredentialRejected = {
+                        intruderCaptureController.markCredentialRejected(accessAttemptId)
+                    },
                     onUnlocked = {
                         returnToAuthenticatedTarget(packageName)
                     },
@@ -174,6 +204,29 @@ class PasswordUnlockActivity : AppCompatActivity() {
             acknowledgePendingNoticeIfPresented()
         }
         window.decorView.invalidate()
+
+        // onNewIntent can start a genuinely new access while this singleTop Activity
+        // is already resumed. Do not wait for another lifecycle callback to stage it.
+        if (activityResumed && accessAttemptId > 0L && !intruderAttemptAuthenticated) {
+            intruderCaptureController.startCaptureIfEligible(accessAttemptId)
+        }
+    }
+
+    private fun beginOrContinueIntruderAttempt(packageName: String?): Long {
+        val target = packageName?.takeIf(String::isNotBlank) ?: return 0L
+        val sameVisibleAttempt =
+            intruderAttemptId > 0L &&
+                intruderAttemptPackage == target &&
+                !intruderAttemptBackgrounded &&
+                !intruderAttemptAuthenticated
+        if (sameVisibleAttempt) return intruderAttemptId
+
+        intruderAttemptId += 1L
+        intruderAttemptPackage = target
+        intruderAttemptBackgrounded = false
+        intruderAttemptAuthenticated = false
+        intruderCaptureController.beginAttempt(intruderAttemptId)
+        return intruderAttemptId
     }
 
     private fun acknowledgePendingNoticeIfPresented(): Boolean {
@@ -280,6 +333,8 @@ private fun PasswordUnlockContent(
     authenticationReady: Boolean,
     authManager: AuthManager,
     blockingSessionManager: BlockingSessionManager,
+    onAuthenticationSucceeded: () -> Unit,
+    onCredentialRejected: () -> Unit,
     onUnlocked: () -> Unit,
     onCancelled: () -> Unit
 ) {
@@ -435,7 +490,11 @@ private fun PasswordUnlockContent(
                         blockedDomain = null,
                         authManager = authManager,
                         sessionManager = blockingSessionManager,
-                        onUnlocked = { unlocked = true },
+                        onUnlocked = {
+                            onAuthenticationSucceeded()
+                            unlocked = true
+                        },
+                        onCredentialRejected = onCredentialRejected,
                         onCancelled = onCancelled
                     )
                 }
