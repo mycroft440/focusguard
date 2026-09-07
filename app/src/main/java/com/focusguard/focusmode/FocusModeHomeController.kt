@@ -11,12 +11,15 @@ import com.focusguard.admin.FocusGuardDeviceAdminReceiver
 import com.focusguard.utils.FocusGuardLogger
 
 /**
- * Temporarily makes FocusGuard the device Home surface while native Focus Mode
- * kiosk enforcement is active.
+ * Protects the device Home surface while native Focus Mode kiosk enforcement is active.
  *
- * The HOME alias is disabled outside Focus Mode so FocusGuard never competes
- * with the user's normal launcher after the session ends. Global actions remain
- * enabled so the protected power menu can still forward shutdown/restart.
+ * Lock Task itself owns the primary navigation guard: HOME and OVERVIEW are deliberately
+ * omitted from [DevicePolicyManager.setLockTaskFeatures], so Android consumes the Home
+ * button/gesture instead of briefly leaving Focus Mode and asking HardBlock to recover.
+ *
+ * The temporary HOME alias remains configured only as a fail-closed fallback for the short
+ * boot/process-recreation interval before Lock Task is restored. Global actions stay enabled
+ * so the protected power menu can still forward normal shutdown/restart actions.
  */
 object FocusModeHomeController {
     internal const val HOME_ALIAS_CLASS =
@@ -37,6 +40,9 @@ object FocusModeHomeController {
         }
 
         return runCatching {
+            // Keep a safe Home destination in reserve for restoration races, but do not
+            // enable LOCK_TASK_FEATURE_HOME. While Lock Task is active the system must
+            // suppress Home rather than execute it and bounce through this alias.
             setHomeAliasEnabled(appContext, true)
             dpm.addPersistentPreferredActivity(
                 admin,
@@ -48,7 +54,7 @@ object FocusModeHomeController {
         }.onFailure { error ->
             FocusGuardLogger.logError(
                 "FocusMode",
-                "Falha ao tornar o HardBlock a Home temporária do Modo Foco",
+                "Falha ao proteger o Home durante o Modo Foco",
                 error
             )
         }.getOrDefault(false)
@@ -63,7 +69,7 @@ object FocusModeHomeController {
         }
         val admin = FocusGuardDeviceAdminReceiver.getComponentName(appContext)
         val features = runCatching { dpm.getLockTaskFeatures(admin) }.getOrNull() ?: return false
-        return lockTaskFeaturesKeepHomeAndPower(features) &&
+        return lockTaskFeaturesBlockHomeAndKeepPower(features) &&
             isHomeAliasEnabled(appContext) &&
             isHomeResolvedToFocusGuard(appContext)
     }
@@ -103,12 +109,20 @@ object FocusModeHomeController {
         disableHomeAlias(appContext)
     }
 
+    /**
+     * HOME/OVERVIEW are intentionally absent. Their absence is what makes Android keep the
+     * current allowlisted task in front when the user presses or swipes Home.
+     */
     internal fun requiredLockTaskFeatures(): Int =
-        DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS or
-            DevicePolicyManager.LOCK_TASK_FEATURE_HOME
+        DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS
 
-    internal fun lockTaskFeaturesKeepHomeAndPower(features: Int): Boolean =
+    internal fun lockTaskFeaturesBlockHomeAndKeepPower(features: Int): Boolean =
         features == requiredLockTaskFeatures()
+
+    /** Kept temporarily for source compatibility with older tests/helpers. */
+    @Deprecated("Use lockTaskFeaturesBlockHomeAndKeepPower")
+    internal fun lockTaskFeaturesKeepHomeAndPower(features: Int): Boolean =
+        lockTaskFeaturesBlockHomeAndKeepPower(features)
 
     internal fun homeIntentFilter(): IntentFilter = IntentFilter(Intent.ACTION_MAIN).apply {
         addCategory(Intent.CATEGORY_HOME)
