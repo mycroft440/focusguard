@@ -54,7 +54,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -63,7 +62,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.focusguard.R
@@ -74,6 +72,8 @@ import com.focusguard.monetization.RewardedGateCoordinator
 import com.focusguard.security.AppUnlockBiometricAuthenticator
 import com.focusguard.security.AuthManager
 import com.focusguard.security.BlockCountdownPolicy
+import com.focusguard.ui.compose.components.FocusGuardAppIcon
+import com.focusguard.ui.compose.components.FocusGuardBannerAd
 import com.focusguard.ui.compose.theme.AccentCyan
 import com.focusguard.ui.compose.theme.AccentIconBadge
 import com.focusguard.ui.compose.theme.CardBorder
@@ -136,6 +136,9 @@ enum class BlockTypeUi(
         DOPAMINE_FAST -> overview.dopamineFastEntries
     }
 }
+
+internal fun shouldShowBlockTypeBanner(type: BlockTypeUi): Boolean =
+    type == BlockTypeUi.DAILY_LIMIT || type == BlockTypeUi.DOPAMINE_FAST
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -206,6 +209,11 @@ fun BlockTypeDetailScreen(
                         containerColor = Color.Transparent
                     )
                 )
+            },
+            bottomBar = {
+                if (shouldShowBlockTypeBanner(type)) {
+                    FocusGuardBannerAd()
+                }
             },
             containerColor = Color.Transparent
         ) { padding ->
@@ -631,17 +639,6 @@ private fun BlockedEntryRow(
             }
         )
     }
-    val iconBitmap = remember(entry.identifier) {
-        if (entry.isWebsite) {
-            null
-        } else {
-            runCatching {
-                context.packageManager.getApplicationIcon(entry.identifier)
-                    .toBitmap(48, 48)
-                    .asImageBitmap()
-            }.getOrNull()
-        }
-    }
 
     FocusCard(
         modifier = Modifier.fillMaxWidth(),
@@ -652,13 +649,7 @@ private fun BlockedEntryRow(
             modifier = Modifier.padding(14.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (iconBitmap != null) {
-                androidx.compose.foundation.Image(
-                    bitmap = iconBitmap,
-                    contentDescription = null,
-                    modifier = Modifier.size(34.dp).clip(RoundedCornerShape(10.dp))
-                )
-            } else {
+            if (entry.isWebsite) {
                 Box(
                     modifier = Modifier
                         .size(34.dp)
@@ -677,6 +668,14 @@ private fun BlockedEntryRow(
                         fontWeight = FontWeight.Bold
                     )
                 }
+            } else {
+                FocusGuardAppIcon(
+                    packageName = entry.identifier,
+                    appName = label,
+                    modifier = Modifier.size(34.dp),
+                    cornerRadius = 10.dp,
+                    allowRemoteFallback = true
+                )
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
