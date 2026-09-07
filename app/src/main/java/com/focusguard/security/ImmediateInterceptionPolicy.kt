@@ -131,13 +131,20 @@ object ImmediateInterceptionPolicy {
         return APP_ICON_CLASS_MARKERS.any { className.contains(it, ignoreCase = true) }
     }
 
-    /** Source-independent fallback used by Recents, notifications and deep links. */
+    /**
+     * Source-independent fallback used by Recents, notifications and deep links.
+     *
+     * A PASSWORD visit can end while Android is still delivering the protected
+     * app's final window-removal events. Those events describe the app that is
+     * leaving, not a new foreground entry, and must not reopen the auth surface.
+     */
     fun isBlockedTargetWindow(
         foregroundPackageName: String,
         blockedPackages: Set<String>
     ): Boolean = foregroundPackageName.isNotBlank() &&
         foregroundPackageName in blockedPackages &&
-        !PasswordTargetAccessGrant.isPackageGranted(foregroundPackageName)
+        !PasswordTargetAccessGrant.isPackageGranted(foregroundPackageName) &&
+        !PasswordTargetAccessGrant.shouldSuppressPostExitWindow(foregroundPackageName)
 
     fun classifySettingsClick(
         packageName: String,
