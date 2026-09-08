@@ -1,6 +1,8 @@
-name: PR APK and AAB
+name: Build APK and AAB
 
 on:
+  push:
+    branches: ["fix/block-priority-hierarchy"]
   pull_request:
     branches: ["main", "master"]
   workflow_dispatch:
@@ -9,12 +11,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-artifacts-${{ github.event.pull_request.number || github.ref }}
+  group: build-apk-aab-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-artifacts:
-    name: Build test APK and AAB
+    name: Compile APK and AAB
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -37,14 +39,14 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Build debug APK and AAB
+      - name: Compile debug APK and AAB
         shell: bash
         run: |
           set -o pipefail
           chmod +x gradlew
-          ./gradlew assembleDebug bundleDebug --no-daemon --stacktrace 2>&1 | tee pr-artifacts-gradle.log
+          ./gradlew assembleDebug bundleDebug --no-daemon --stacktrace 2>&1 | tee build-apk-aab-gradle.log
 
-      - name: Collect artifacts
+      - name: Collect APK and AAB
         shell: bash
         run: |
           set -euo pipefail
@@ -53,28 +55,28 @@ jobs:
           test -n "$APK" && test -s "$APK"
           test -n "$AAB" && test -s "$AAB"
 
-          mkdir -p pr-artifacts
-          cp "$APK" pr-artifacts/FocusGuard-test.apk
-          cp "$AAB" pr-artifacts/FocusGuard-test.aab
+          mkdir -p build-artifacts
+          cp "$APK" build-artifacts/FocusGuard-test.apk
+          cp "$AAB" build-artifacts/FocusGuard-test.aab
           sha256sum \
-            pr-artifacts/FocusGuard-test.apk \
-            pr-artifacts/FocusGuard-test.aab \
-            > pr-artifacts/SHA256SUMS.txt
+            build-artifacts/FocusGuard-test.apk \
+            build-artifacts/FocusGuard-test.aab \
+            > build-artifacts/SHA256SUMS.txt
 
-      - name: Upload test APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: focusguard-test-apk-${{ github.run_number }}
-          path: pr-artifacts/FocusGuard-test.apk
+          name: FocusGuard-APK-${{ github.run_number }}
+          path: build-artifacts/FocusGuard-test.apk
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
-      - name: Upload test AAB
+      - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: focusguard-test-aab-${{ github.run_number }}
-          path: pr-artifacts/FocusGuard-test.aab
+          name: FocusGuard-AAB-${{ github.run_number }}
+          path: build-artifacts/FocusGuard-test.aab
           if-no-files-found: error
           retention-days: 30
 
@@ -82,9 +84,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: focusguard-test-build-diagnostics-${{ github.run_number }}
+          name: FocusGuard-build-diagnostics-${{ github.run_number }}
           path: |
-            pr-artifacts/SHA256SUMS.txt
-            pr-artifacts-gradle.log
+            build-artifacts/SHA256SUMS.txt
+            build-apk-aab-gradle.log
           if-no-files-found: warn
           retention-days: 14
