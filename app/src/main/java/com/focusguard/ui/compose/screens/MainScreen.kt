@@ -169,8 +169,8 @@ fun MainScreen(
                     AnimatedContent(
                         targetState = selectedTab,
                         transitionSpec = {
-                            fadeIn(animationSpec = tween(180)) togetherWith
-                                fadeOut(animationSpec = tween(180))
+                            fadeIn(animationSpec = tween(140)) togetherWith
+                                fadeOut(animationSpec = tween(140))
                         },
                         label = "MainContent"
                     ) { targetTab ->
@@ -270,7 +270,7 @@ private fun FocusGuardBottomNavigation(
             containerColor = Color.Transparent,
             tonalElevation = 0.dp
         ) {
-            focusGuardNavigationItems().forEach { item ->
+            FocusGuardNavigationItems.forEach { item ->
                 val selected = selectedTab == item.tab
                 NavigationBarItem(
                     selected = selected,
@@ -313,7 +313,7 @@ private fun FocusModeNavigationRail(
             )
         }
     ) {
-        focusGuardNavigationItems().forEach { item ->
+        FocusGuardNavigationItems.forEach { item ->
             NavigationRailItem(
                 selected = selectedTab == item.tab,
                 onClick = { onTabChange(item.tab) },
@@ -343,7 +343,7 @@ private data class FocusGuardNavigationItem(
     val labelRes: Int
 )
 
-private fun focusGuardNavigationItems() = listOf(
+private val FocusGuardNavigationItems = listOf(
     FocusGuardNavigationItem(1, Icons.Default.Shield, R.string.nav_protection),
     FocusGuardNavigationItem(2, Icons.Default.Timer, R.string.nav_focus),
     FocusGuardNavigationItem(3, Icons.Outlined.VisibilityOff, R.string.nav_recovery),
