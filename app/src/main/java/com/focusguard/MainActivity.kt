@@ -68,7 +68,6 @@ class MainActivity : AppCompatActivity() {
 
             FocusGuardLogger.log("FocusMode", "Voltar interceptado pelo shell do Modo Foco")
             requestFocusModeHomeSurface()
-            FocusModeKioskController.reconcileSystemRestrictions(this@MainActivity)
             enforceFocusModeLockTask()
         }
     }
@@ -148,7 +147,6 @@ class MainActivity : AppCompatActivity() {
         acknowledgePendingCurtainIfPresented()
         FocusGuardLogger.log("MainActivity", "onResume disparado")
         updateFocusModeBackGuard()
-        FocusModeKioskController.reconcileSystemRestrictions(this)
         enforceFocusModeLockTask()
     }
 
