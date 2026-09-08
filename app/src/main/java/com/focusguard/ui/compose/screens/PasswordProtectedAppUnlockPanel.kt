@@ -38,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import com.focusguard.R
-import com.focusguard.focusmode.FocusModeStore
 import com.focusguard.manager.BlockingSessionManager
 import com.focusguard.security.AppUnlockBiometricAuthenticator
 import com.focusguard.security.AuthManager
@@ -46,6 +45,7 @@ import com.focusguard.security.BiometricAppUnlockPolicy
 import com.focusguard.security.PasswordAppUnlockMode
 import com.focusguard.security.PasswordAppUnlockStore
 import com.focusguard.security.PasswordTargetAccessGrant
+import com.focusguard.service.AppBlockSurfaceResolver
 import com.focusguard.ui.compose.components.PatternLockInput
 import com.focusguard.ui.compose.theme.AccentCyan
 import com.focusguard.ui.compose.theme.DangerRed
@@ -130,50 +130,48 @@ internal fun PasswordProtectedTargetUnlockPanel(
                     return@launch
                 }
 
-                // A target credential is weaker than an irreversible protection or
-                // a separately configured daily limit. Before unsuspending anything,
-                // independently verify that no stronger/parallel rule owns the same
-                // target. This also keeps legacy databases with overlapping rules
-                // fail-closed while the one-visit grant is recognized by Accessibility.
-                val overview = sessionManager.getBlockOverview()
-                val heldByDopamineFast = if (!blockedPackage.isNullOrBlank()) {
-                    overview.dopamineFastEntries.any {
-                        !it.isWebsite && it.identifier == blockedPackage
+                // Re-resolve ownership after the target credential has already been
+                // accepted. This closes the race where a daily allowance expires
+                // while the password/biometric UI is open. A configured limit with
+                // quota remaining is intentionally invisible here; only a limit or
+                // TIME protection that is blocking at this exact instant may take
+                // ownership away from PASSWORD.
+                if (!blockedPackage.isNullOrBlank()) {
+                    val resolution = AppBlockSurfaceResolver(
+                        context = context,
+                        sessionManager = sessionManager
+                    ).resolveAttempt(
+                        blockedPackage = blockedPackage,
+                        strictPomodoroActive = false
+                    )
+                    if (!resolution.allowsPasswordVisit) {
+                        error = failureMessage
+                        onInvalid?.invoke()
+                        return@launch
                     }
                 } else {
+                    // PASSWORD sessions are app-only in current builds. Keep the
+                    // legacy website path fail-closed for old databases rather than
+                    // weakening a historical overlapping rule.
+                    val overview = sessionManager.getBlockOverview()
                     val candidate = blockedDomain ?: websiteRule.orEmpty()
-                    overview.dopamineFastEntries.any { entry ->
+                    val heldByDopamineFast = overview.dopamineFastEntries.any { entry ->
                         entry.isWebsite && WebsiteBlocker.isUrlBlocked(
                             candidate,
                             listOf(entry.identifier)
                         )
                     }
-                }
-                val heldByDailyLimit = if (!blockedPackage.isNullOrBlank()) {
-                    overview.dailyLimitEntries.any {
-                        !it.isWebsite && it.identifier == blockedPackage
-                    }
-                } else {
-                    val candidate = blockedDomain ?: websiteRule.orEmpty()
-                    overview.dailyLimitEntries.any { entry ->
+                    val heldByDailyLimit = overview.dailyLimitEntries.any { entry ->
                         entry.isWebsite && WebsiteBlocker.isUrlBlocked(
                             candidate,
                             listOf(entry.identifier)
                         )
                     }
-                }
-                val heldByFocusMode = blockedPackage
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { packageName ->
-                        FocusModeStore.readSession(context)
-                            ?.takeIf { it.isActive() }
-                            ?.blockedPackages
-                            ?.contains(packageName) == true
-                    } == true
-                if (heldByDopamineFast || heldByDailyLimit || heldByFocusMode) {
-                    error = failureMessage
-                    onInvalid?.invoke()
-                    return@launch
+                    if (heldByDopamineFast || heldByDailyLimit) {
+                        error = failureMessage
+                        onInvalid?.invoke()
+                        return@launch
+                    }
                 }
 
                 if (websiteRule != null) {
