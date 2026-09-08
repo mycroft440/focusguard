@@ -10,9 +10,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class IntruderPhotoTimestampWriterTest {
 
     @Test
@@ -48,8 +50,8 @@ class IntruderPhotoTimestampWriterTest {
         assertThat(layout.baseline).isGreaterThan(layout.top)
         assertThat(layout.textSize).isGreaterThan(0f)
 
-        // The dark translucent footer changes an originally white pixel even away
-        // from the text itself, proving that the timestamp block is part of pixels.
+        // Native Robolectric graphics executes Canvas blending like Android. The
+        // footer must therefore alter an originally white pixel away from the text.
         val footerPixel = bitmap.getPixel(4, 596)
         assertThat(Color.red(footerPixel)).isLessThan(255)
         assertThat(Color.green(footerPixel)).isLessThan(255)
