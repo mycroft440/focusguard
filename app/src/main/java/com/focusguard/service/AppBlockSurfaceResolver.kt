@@ -28,7 +28,12 @@ internal class AppBlockSurfaceResolver(
          * one-visit grant intentionally returns to the same target task.
          */
         val closeTargetAfterInterception: Boolean
-    )
+    ) {
+        /** True only while PASSWORD is still the dominant owner of this attempt. */
+        val allowsPasswordVisit: Boolean
+            get() = surface == AppBlockSurfacePolicy.Surface.PASSWORD_UNLOCK &&
+                !closeTargetAfterInterception
+    }
 
     private val appContext = context.applicationContext
 
@@ -66,10 +71,10 @@ internal class AppBlockSurfaceResolver(
             strictPomodoroActive = false
         )
 
-        // UsageImpactRouter is also the canonical detector for a live TIME
-        // commitment and for a non-password usage-limit intervention. A PASSWORD
-        // usage limit is intentionally absent from that metrics route, but its
-        // credential origin still marks it as a usage-limit closure below.
+        // This is the live, stateful check. It only reports a TIME session while
+        // its current schedule window is active, and it only reports a daily limit
+        // after the allowance is exhausted while its selected post-limit behavior
+        // is actually blocking now. A configured-but-inactive rule must never win.
         val timedOrUsageInterventionBlocksTarget =
             if (
                 credentialOrigin ==
@@ -105,32 +110,26 @@ internal class AppBlockSurfaceResolver(
             ?.blockedPackages
             ?.contains(packageName) == true
 
-        // A legacy database can contain a PASSWORD session overlapping a TIME
-        // commitment. Keep that target on the non-interactive blocking surface and
-        // close the target rather than preserving the PASSWORD visit task.
-        val dopamineFastBlocksTarget = sessionManager.getBlockOverview()
-            .dopamineFastEntries
-            .any { entry -> !entry.isWebsite && entry.identifier == packageName }
-
-        // UsageImpactRouter intentionally ignores PASSWORD-mode limits. Those were
-        // already handled by credentialUnlockOrigin above. Here it detects active
-        // non-password/time limits that may legally coexist with a PASSWORD session.
-        val activeUsageLimitBlocksTarget = timedOrUsageInterventionBlocksTarget
+        // TIME no longer consults BlockOverview here. The overview is an inventory
+        // of configured rules and can legitimately contain a recurring TIME rule
+        // outside its current blocking window. UsageImpactRouter above already
+        // resolves the live TIME owner and therefore avoids a false permanent block.
+        val activeTimedOrUsageBlock = timedOrUsageInterventionBlocksTarget
 
         return Resolution(
             surface = AppBlockSurfacePolicy.decide(
                 AppBlockSurfacePolicy.Facts(
                     strictPomodoro = false,
                     focusModeBlocksTarget = focusModeBlocksTarget,
-                    dopamineFastBlocksTarget = dopamineFastBlocksTarget,
-                    activeUsageLimitBlocksTarget = activeUsageLimitBlocksTarget,
+                    dopamineFastBlocksTarget = false,
+                    activeUsageLimitBlocksTarget = activeTimedOrUsageBlock,
                     credentialOrigin = credentialOrigin
                 )
             ),
             closeTargetAfterInterception = shouldCloseTargetAfterInterception(
                 credentialOrigin = credentialOrigin,
-                timedOrUsageInterventionBlocksTarget = activeUsageLimitBlocksTarget,
-                dopamineFastBlocksTarget = dopamineFastBlocksTarget
+                timedOrUsageInterventionBlocksTarget = activeTimedOrUsageBlock,
+                dopamineFastBlocksTarget = false
             )
         )
     }
