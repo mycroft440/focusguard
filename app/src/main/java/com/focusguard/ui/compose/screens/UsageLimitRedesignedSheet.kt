@@ -42,6 +42,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -334,21 +336,24 @@ private fun AppLimitDetailsScreen(
     onDismiss: () -> Unit,
     onContinue: (AppLimitDetailsDraft) -> Unit
 ) {
-    var dailyMinutes by remember(initialDraft) {
+    val dailyMinutesState = remember(initialDraft) {
         mutableStateOf(initialDraft.minutes.takeIf { it > 0 }?.toString().orEmpty())
     }
-    var durationAmount by remember(initialDraft) {
+    val durationAmountState = remember(initialDraft) {
         mutableStateOf(initialDraft.duration.takeIf { it > 0 }?.toString().orEmpty())
     }
-    var durationUnit by remember(initialDraft) { mutableStateOf(initialDraft.durationUnit) }
-    var durationEdited by remember(initialDraft) { mutableStateOf(initialDraft.durationEdited) }
+    val durationUnitState = remember(initialDraft) { mutableStateOf(initialDraft.durationUnit) }
+    val durationEditedState = remember(initialDraft) { mutableStateOf(initialDraft.durationEdited) }
 
-    val enteredMinutes = remember(dailyMinutes) { dailyMinutes.toIntOrNull() ?: 0 }
-    val enteredDuration = remember(durationAmount) { durationAmount.toIntOrNull() ?: 0 }
-    // Positive amounts are the only validity condition used by calculateRuleEndMillis.
-    // Keep Calendar arithmetic out of the character-by-character recomposition path;
-    // the parent computes the exact persisted deadline once the draft is committed.
-    val canAdvance = enteredMinutes > 0 && enteredDuration > 0
+    // This parent only observes whether the form crosses the valid/invalid boundary.
+    // Character changes that keep the same validity stay in their small editor
+    // subtree instead of recomposing both sections, the footer and the scroll host.
+    val canAdvance by remember(dailyMinutesState, durationAmountState) {
+        derivedStateOf {
+            (dailyMinutesState.value.toIntOrNull() ?: 0) > 0 &&
+                (durationAmountState.value.toIntOrNull() ?: 0) > 0
+        }
+    }
     val formattedCurrentRuleEnd = remember(editMode, currentRuleEnd, nowMillis) {
         currentRuleEnd
             ?.takeIf { editMode && it > nowMillis }
@@ -369,98 +374,18 @@ private fun AppLimitDetailsScreen(
             UsageLimitDecisionBlock(
                 title = stringResource(R.string.limits_daily_max_title)
             ) {
-                OutlinedTextField(
-                    value = dailyMinutes,
-                    onValueChange = { raw ->
-                        dailyMinutes = raw.filter(Char::isDigit).take(4)
-                    },
-                    label = { Text(stringResource(R.string.limits_daily_max_minutes_label)) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        color = TextPrimary,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentCyan,
-                        unfocusedBorderColor = CardBorder,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
-                )
-                Spacer(Modifier.height(12.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(15, 30, 60, 120).forEach { minutes ->
-                        FilterChip(
-                            selected = enteredMinutes == minutes,
-                            onClick = { dailyMinutes = minutes.toString() },
-                            label = { Text("$minutes min") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AccentCyan.copy(alpha = 0.18f),
-                                selectedLabelColor = AccentCyan
-                            )
-                        )
-                    }
-                }
+                DailyMinutesEditor(dailyMinutesState)
             }
 
             UsageLimitDecisionBlock(
                 title = stringResource(R.string.limits_rule_duration_title),
                 showDivider = false
             ) {
-                OutlinedTextField(
-                    value = durationAmount,
-                    onValueChange = { raw ->
-                        durationEdited = true
-                        durationAmount = raw.filter(Char::isDigit).take(3)
-                    },
-                    label = { Text(stringResource(R.string.limits_duration_amount_label)) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.width(112.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentCyan,
-                        unfocusedBorderColor = CardBorder,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
+                RuleDurationEditor(
+                    durationAmountState = durationAmountState,
+                    durationUnitState = durationUnitState,
+                    durationEditedState = durationEditedState
                 )
-                Spacer(Modifier.height(10.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    DurationUnitChip(
-                        selected = durationUnit == UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS,
-                        label = stringResource(R.string.limits_duration_days),
-                        onClick = {
-                            durationEdited = true
-                            durationUnit = UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS
-                        }
-                    )
-                    DurationUnitChip(
-                        selected = durationUnit == UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS,
-                        label = stringResource(R.string.limits_duration_weeks),
-                        onClick = {
-                            durationEdited = true
-                            durationUnit = UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS
-                        }
-                    )
-                    DurationUnitChip(
-                        selected = durationUnit == UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS,
-                        label = stringResource(R.string.limits_duration_months),
-                        onClick = {
-                            durationEdited = true
-                            durationUnit = UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS
-                        }
-                    )
-                }
             }
 
             formattedCurrentRuleEnd?.let { formatted ->
@@ -510,10 +435,10 @@ private fun AppLimitDetailsScreen(
                 onClick = {
                     onContinue(
                         AppLimitDetailsDraft(
-                            minutes = enteredMinutes,
-                            duration = enteredDuration,
-                            durationUnit = durationUnit,
-                            durationEdited = durationEdited
+                            minutes = dailyMinutesState.value.toIntOrNull() ?: 0,
+                            duration = durationAmountState.value.toIntOrNull() ?: 0,
+                            durationUnit = durationUnitState.value,
+                            durationEdited = durationEditedState.value
                         )
                     )
                 },
@@ -535,6 +460,107 @@ private fun AppLimitDetailsScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DailyMinutesEditor(dailyMinutesState: MutableState<String>) {
+    val enteredMinutes = remember(dailyMinutesState.value) {
+        dailyMinutesState.value.toIntOrNull() ?: 0
+    }
+    OutlinedTextField(
+        value = dailyMinutesState.value,
+        onValueChange = { raw ->
+            dailyMinutesState.value = raw.filter(Char::isDigit).take(4)
+        },
+        label = { Text(stringResource(R.string.limits_daily_max_minutes_label)) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        textStyle = androidx.compose.ui.text.TextStyle(
+            color = TextPrimary,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        ),
+        modifier = Modifier.fillMaxWidth(),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = AccentCyan,
+            unfocusedBorderColor = CardBorder,
+            focusedTextColor = TextPrimary,
+            unfocusedTextColor = TextPrimary
+        )
+    )
+    Spacer(Modifier.height(12.dp))
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        listOf(15, 30, 60, 120).forEach { minutes ->
+            FilterChip(
+                selected = enteredMinutes == minutes,
+                onClick = { dailyMinutesState.value = minutes.toString() },
+                label = { Text("$minutes min") },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = AccentCyan.copy(alpha = 0.18f),
+                    selectedLabelColor = AccentCyan
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun RuleDurationEditor(
+    durationAmountState: MutableState<String>,
+    durationUnitState: MutableState<UsageLimitBehaviorPolicy.RuleDurationUnit>,
+    durationEditedState: MutableState<Boolean>
+) {
+    OutlinedTextField(
+        value = durationAmountState.value,
+        onValueChange = { raw ->
+            durationEditedState.value = true
+            durationAmountState.value = raw.filter(Char::isDigit).take(3)
+        },
+        label = { Text(stringResource(R.string.limits_duration_amount_label)) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.width(112.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = AccentCyan,
+            unfocusedBorderColor = CardBorder,
+            focusedTextColor = TextPrimary,
+            unfocusedTextColor = TextPrimary
+        )
+    )
+    Spacer(Modifier.height(10.dp))
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        DurationUnitChip(
+            selected = durationUnitState.value == UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS,
+            label = stringResource(R.string.limits_duration_days),
+            onClick = {
+                durationEditedState.value = true
+                durationUnitState.value = UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS
+            }
+        )
+        DurationUnitChip(
+            selected = durationUnitState.value == UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS,
+            label = stringResource(R.string.limits_duration_weeks),
+            onClick = {
+                durationEditedState.value = true
+                durationUnitState.value = UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS
+            }
+        )
+        DurationUnitChip(
+            selected = durationUnitState.value == UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS,
+            label = stringResource(R.string.limits_duration_months),
+            onClick = {
+                durationEditedState.value = true
+                durationUnitState.value = UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS
+            }
+        )
     }
 }
 
