@@ -33,3 +33,8 @@ A leitura do código mostrou que `AppBlockSurfaceResolver` já era o ponto arqui
 
 ## Critério de conclusão
 Nenhuma regra é apagada para resolver prioridade. O mesmo alvo pode manter PASSWORD + limite; apenas o mecanismo atualmente dominante decide a superfície e se um grant pode ser emitido.
+
+## Ajuste adicional encontrado na validação
+- Em Device Owner, um alvo PASSWORD não pode permanecer suspenso pelo sistema antes da tentativa de abertura; caso contrário o Accessibility não recebe a janela e a credencial nunca aparece.
+- A suspensão nativa passa a excluir apenas PASSWORD puro. Se o mesmo pacote estiver sob limite efetivamente ativo, TIME/Jejum, Focus Mode ou Pomodoro estrito, ele continua suspenso.
+- O snapshot do Accessibility continua contendo PASSWORD, preservando a interceptação e a autenticação de uma visita.
