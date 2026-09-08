@@ -1,5 +1,6 @@
 package com.focusguard.service
 
+import com.focusguard.security.AppBlockSurfacePolicy
 import com.focusguard.security.BiometricAppUnlockPolicy
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
@@ -15,6 +16,36 @@ class AppBlockSurfaceResolverClosureTest {
                 dopamineFastBlocksTarget = false
             )
         ).isFalse()
+    }
+
+    @Test
+    fun `plain password resolution allows one authenticated visit`() {
+        val resolution = AppBlockSurfaceResolver.Resolution(
+            surface = AppBlockSurfacePolicy.Surface.PASSWORD_UNLOCK,
+            closeTargetAfterInterception = false
+        )
+
+        assertThat(resolution.allowsPasswordVisit).isTrue()
+    }
+
+    @Test
+    fun `generic block resolution cannot grant password visit`() {
+        val resolution = AppBlockSurfaceResolver.Resolution(
+            surface = AppBlockSurfacePolicy.Surface.GENERIC_BLOCK,
+            closeTargetAfterInterception = true
+        )
+
+        assertThat(resolution.allowsPasswordVisit).isFalse()
+    }
+
+    @Test
+    fun `password surface marked for closure fails closed`() {
+        val resolution = AppBlockSurfaceResolver.Resolution(
+            surface = AppBlockSurfacePolicy.Surface.PASSWORD_UNLOCK,
+            closeTargetAfterInterception = true
+        )
+
+        assertThat(resolution.allowsPasswordVisit).isFalse()
     }
 
     @Test
