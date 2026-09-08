@@ -6,6 +6,59 @@ import org.junit.Test
 class AppUsageLimitActivationUsageTest {
 
     @Test
+    fun `first observation snapshots previous usage and starts new limit at zero`() {
+        val dayStart = 1_000_000L
+        val activatedAt = dayStart + 30 * 60_000L
+        val usageAlreadyConsumedBeforeLimit = 25 * 60_000L
+        val baseline = AppUsageLimitActivationUsage.firstObservationBaselineMillis(
+            usageAlreadyConsumedBeforeLimit
+        )
+
+        val effectiveUsage = AppUsageLimitActivationUsage.usageSinceActivationMillis(
+            currentDayUsageMillis = usageAlreadyConsumedBeforeLimit,
+            activationBaselineMillis = baseline,
+            activatedAtMillis = activatedAt,
+            dayStartMillis = dayStart
+        )
+
+        assertThat(baseline).isEqualTo(usageAlreadyConsumedBeforeLimit)
+        assertThat(effectiveUsage).isEqualTo(0L)
+    }
+
+    @Test
+    fun `one minute limit is reached only after one full post activation minute`() {
+        val dayStart = 1_000_000L
+        val activatedAt = dayStart + 30 * 60_000L
+        val usageAlreadyConsumedBeforeLimit = 25 * 60_000L
+        val baseline = AppUsageLimitActivationUsage.firstObservationBaselineMillis(
+            usageAlreadyConsumedBeforeLimit
+        )
+
+        val immediatelyAfterActivation = AppUsageLimitActivationUsage.usageSinceActivationMillis(
+            currentDayUsageMillis = usageAlreadyConsumedBeforeLimit,
+            activationBaselineMillis = baseline,
+            activatedAtMillis = activatedAt,
+            dayStartMillis = dayStart
+        )
+        val beforeOneMinute = AppUsageLimitActivationUsage.usageSinceActivationMillis(
+            currentDayUsageMillis = usageAlreadyConsumedBeforeLimit + 59_999L,
+            activationBaselineMillis = baseline,
+            activatedAtMillis = activatedAt,
+            dayStartMillis = dayStart
+        )
+        val atOneMinute = AppUsageLimitActivationUsage.usageSinceActivationMillis(
+            currentDayUsageMillis = usageAlreadyConsumedBeforeLimit + 60_000L,
+            activationBaselineMillis = baseline,
+            activatedAtMillis = activatedAt,
+            dayStartMillis = dayStart
+        )
+
+        assertThat(UsageLimitForegroundPolicy.usedMinutes(immediatelyAfterActivation)).isEqualTo(0L)
+        assertThat(UsageLimitForegroundPolicy.usedMinutes(beforeOneMinute)).isEqualTo(0L)
+        assertThat(UsageLimitForegroundPolicy.usedMinutes(atOneMinute)).isEqualTo(1L)
+    }
+
+    @Test
     fun `usage before activation is not charged to a new daily limit`() {
         val dayStart = 1_000_000L
         val activatedAt = dayStart + 10 * 60_000L

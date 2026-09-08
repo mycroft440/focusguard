@@ -5,17 +5,23 @@ import android.content.Context
 import com.focusguard.database.AppUsageLimit
 
 /**
- * Converts Android's day-wide UsageStats counter into the usage that happened
- * after a specific app limit was activated.
+ * Converts Android's day-wide UsageStats counter into usage accumulated after a
+ * specific app limit was activated.
  *
- * UsageStats gives us a cheap aggregate from local midnight to now. Querying a
- * second arbitrary range for every app on every 1-second enforcement pulse would
- * make the limiter noticeably heavier, so the pre-activation baseline is lazily
- * captured once per {package, activation, day}. It stays in memory for the hot
- * path and is mirrored to SharedPreferences so process recreation keeps the exact
- * same allowance. From the following local midnight onward the activation
- * predates the day and no subtraction is required: the limit naturally becomes a
- * normal daily allowance.
+ * The important invariant is that a newly-created limit starts at zero even when
+ * the target app was already used earlier on the same day. Android's aggregate
+ * counters are reliable for a midnight-to-now total, but two aggregate queries
+ * with different arbitrary end times are not guaranteed to use matching buckets.
+ * Therefore the first enforcement observation snapshots the exact day-wide
+ * counter already supplied by the caller and persists it as the activation
+ * baseline. Later observations subtract that same baseline from the same kind of
+ * day-wide counter.
+ *
+ * The creation flow calls enforcement immediately after persisting the rule, so
+ * the first snapshot represents the usage that existed when the rule was defined.
+ * SharedPreferences keeps that baseline across process recreation. From the next
+ * local midnight onward the activation predates the day and the rule naturally
+ * becomes an ordinary midnight-based daily allowance.
  */
 object AppUsageLimitActivationUsage {
     private const val PREFS_NAME = "app_usage_limit_activation_usage"
@@ -31,6 +37,7 @@ object AppUsageLimitActivationUsage {
 
     private val memoryBaselines = mutableMapOf<BaselineKey, Long>()
 
+    @Suppress("UNUSED_PARAMETER")
     fun effectiveUsageMillis(
         context: Context,
         usageStatsManager: UsageStatsManager,
@@ -51,11 +58,10 @@ object AppUsageLimitActivationUsage {
 
         val baseline = readOrCreateBaseline(
             context = context,
-            usageStatsManager = usageStatsManager,
             packageName = limit.packageName,
             activatedAtMillis = activatedAt,
             dayStartMillis = dayStartMillis,
-            nowMillis = nowMillis
+            currentDayUsageMillis = currentUsage
         ) ?: return 0L
 
         return usageSinceActivationMillis(
@@ -79,14 +85,17 @@ object AppUsageLimitActivationUsage {
             .coerceAtLeast(0L)
     }
 
+    /** The first observation becomes zero by subtracting this exact snapshot. */
+    internal fun firstObservationBaselineMillis(currentDayUsageMillis: Long): Long =
+        currentDayUsageMillis.coerceAtLeast(0L)
+
     @Synchronized
     private fun readOrCreateBaseline(
         context: Context,
-        usageStatsManager: UsageStatsManager,
         packageName: String,
         activatedAtMillis: Long,
         dayStartMillis: Long,
-        nowMillis: Long
+        currentDayUsageMillis: Long
     ): Long? {
         if (packageName.isBlank()) return null
         val cacheKey = BaselineKey(packageName, activatedAtMillis, dayStartMillis)
@@ -106,24 +115,15 @@ object AppUsageLimitActivationUsage {
             return persisted
         }
 
-        // Only a cache miss needs this binder/AppOps check. Never persist a fake
-        // zero baseline while Usage Access is absent; after permission restoration
-        // the real pre-activation usage can still be reconstructed correctly.
+        // Never persist a fake snapshot without Usage Access. The next pulse can
+        // capture the real day-wide counter after the permission is restored.
         if (!PermissionUtils.isUsageAccessEnabled(context)) return null
 
-        val baselineEnd = activatedAtMillis.coerceAtMost(nowMillis)
-        val baseline = try {
-            usageStatsManager
-                .queryAndAggregateUsageStats(dayStartMillis, baselineEnd)
-                .get(packageName)
-                ?.totalTimeInForeground
-                ?.coerceAtLeast(0L)
-                ?: 0L
-        } catch (_: RuntimeException) {
-            // Fail open for this pulse and retry later instead of persisting an
-            // incorrect baseline that could make old usage count against the limit.
-            return null
-        }
+        // Use the caller's midnight-to-now counter itself as the activation
+        // snapshot. This guarantees that pre-activation usage cannot leak into
+        // the delta because both sides of the subtraction come from the same
+        // counter series instead of two differently bucketed Android queries.
+        val baseline = firstObservationBaselineMillis(currentDayUsageMillis)
 
         memoryBaselines[cacheKey] = baseline
         prefs.edit()
