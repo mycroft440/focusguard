@@ -244,7 +244,6 @@ fun AppLimitRedesignedSheet(
                         permissionsMissing = permissionsMissing,
                         initialDraft = detailsDraft,
                         nowMillis = now,
-                        activeExistingRuleEnd = activeExistingRuleEnd,
                         editMode = editMode,
                         currentRuleEnd = app.lockUntilTimestamp,
                         onRemove = { onSave(null, false, "NONE", null, null) },
@@ -329,7 +328,6 @@ private fun AppLimitDetailsScreen(
     permissionsMissing: Boolean,
     initialDraft: AppLimitDetailsDraft,
     nowMillis: Long,
-    activeExistingRuleEnd: Long?,
     editMode: Boolean,
     currentRuleEnd: Long?,
     onRemove: () -> Unit,
@@ -347,21 +345,17 @@ private fun AppLimitDetailsScreen(
 
     val enteredMinutes = remember(dailyMinutes) { dailyMinutes.toIntOrNull() ?: 0 }
     val enteredDuration = remember(durationAmount) { durationAmount.toIntOrNull() ?: 0 }
-    val calculatedRuleEnd = remember(nowMillis, enteredDuration, durationUnit) {
-        UsageLimitBehaviorPolicy.calculateRuleEndMillis(
-            nowMillis = nowMillis,
-            amount = enteredDuration,
-            unit = durationUnit
-        )
+    // Positive amounts are the only validity condition used by calculateRuleEndMillis.
+    // Keep Calendar arithmetic out of the character-by-character recomposition path;
+    // the parent computes the exact persisted deadline once the draft is committed.
+    val canAdvance = enteredMinutes > 0 && enteredDuration > 0
+    val formattedCurrentRuleEnd = remember(editMode, currentRuleEnd, nowMillis) {
+        currentRuleEnd
+            ?.takeIf { editMode && it > nowMillis }
+            ?.let { end ->
+                SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(end))
+            }
     }
-    val ruleEnd = remember(activeExistingRuleEnd, durationEdited, calculatedRuleEnd) {
-        UsageLimitBehaviorPolicy.resolveRuleEndForEdit(
-            existingRuleEndMillis = activeExistingRuleEnd,
-            durationEdited = durationEdited,
-            calculatedRuleEndMillis = calculatedRuleEnd
-        )
-    }
-    val canAdvance = enteredMinutes > 0 && enteredDuration > 0 && ruleEnd != null
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -469,9 +463,7 @@ private fun AppLimitDetailsScreen(
                 }
             }
 
-            if (editMode && currentRuleEnd?.let { it > nowMillis } == true) {
-                val formatted = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-                    .format(Date(currentRuleEnd))
+            formattedCurrentRuleEnd?.let { formatted ->
                 Text(
                     stringResource(R.string.limits_rule_current_until, formatted),
                     color = TextHint,
