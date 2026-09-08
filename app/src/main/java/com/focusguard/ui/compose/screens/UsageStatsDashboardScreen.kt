@@ -74,9 +74,14 @@ fun UsageStatsDashboardScreen(onBack: () -> Unit, showTopBar: Boolean = true) {
     var reloadTrigger by remember { mutableIntStateOf(0) }
 
     DisposableEffect(lifecycleOwner) {
+        var initialResumeObserved = false
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                reloadTrigger++
+                if (initialResumeObserved) {
+                    reloadTrigger++
+                } else {
+                    initialResumeObserved = true
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

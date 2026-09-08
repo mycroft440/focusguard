@@ -229,6 +229,10 @@ fun FocusGuardNavHost(
     }
 
     fun withProtectionPermissions(onReady: () -> Unit) {
+        if (missingProtectionPermissions.isEmpty()) {
+            onReady()
+            return
+        }
         navigationScope.launch {
             if (refreshProtectionPermissions().isEmpty()) {
                 onReady()
@@ -292,7 +296,7 @@ fun FocusGuardNavHost(
         AnimatedContent(
             targetState = currentRoute,
             transitionSpec = {
-                fadeIn(animationSpec = tween(220)) togetherWith fadeOut(animationSpec = tween(220))
+                fadeIn(animationSpec = tween(140)) togetherWith fadeOut(animationSpec = tween(140))
             },
             label = "NavigationTransition"
         ) { route ->
