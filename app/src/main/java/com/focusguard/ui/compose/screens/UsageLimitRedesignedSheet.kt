@@ -42,6 +42,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -78,6 +81,21 @@ private enum class AppLimitEditorStep {
 }
 
 /**
+ * Snapshot transferred between the two editor steps.
+ *
+ * The text fields deliberately keep their character-by-character state inside
+ * [AppLimitDetailsScreen]. Updating this snapshot only when the user continues
+ * prevents every key press from invalidating the ModalBottomSheet, header and
+ * second-step calculations.
+ */
+private data class AppLimitDetailsDraft(
+    val minutes: Int,
+    val duration: Int,
+    val durationUnit: UsageLimitBehaviorPolicy.RuleDurationUnit,
+    val durationEdited: Boolean
+)
+
+/**
  * Two-screen app-limit editor.
  *
  * Screen 1 owns the allowance and the overall rule duration. Screen 2 owns the
@@ -97,18 +115,41 @@ fun AppLimitRedesignedSheet(
     onSave: (Int?, Boolean, String, String?, Long?) -> Unit
 ) {
     val editMode = app.currentLimitMinutes != null
-    val now = System.currentTimeMillis()
-    val activeExistingRuleEnd = app.lockUntilTimestamp?.takeIf { it > now }
-    val remainingDays = activeExistingRuleEnd
-        ?.let {
-            ((it - now + TimeUnit.DAYS.toMillis(1) - 1L) / TimeUnit.DAYS.toMillis(1)).toInt()
-        }
-        ?.coerceAtLeast(1)
-        ?: 1
+    val now = remember(app.packageName, app.lockUntilTimestamp) {
+        System.currentTimeMillis()
+    }
+    val activeExistingRuleEnd = remember(app.lockUntilTimestamp, now) {
+        app.lockUntilTimestamp?.takeIf { it > now }
+    }
+    val remainingDays = remember(activeExistingRuleEnd, now) {
+        activeExistingRuleEnd
+            ?.let {
+                ((it - now + TimeUnit.DAYS.toMillis(1) - 1L) /
+                    TimeUnit.DAYS.toMillis(1)).toInt()
+            }
+            ?.coerceAtLeast(1)
+            ?: 1
+    }
+    val initialDurationUnit = if (editMode) {
+        UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS
+    } else {
+        UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS
+    }
 
     var step by remember(app.packageName) { mutableStateOf(AppLimitEditorStep.DETAILS) }
-    var dailyMinutes by remember(app.packageName, app.currentLimitMinutes) {
-        mutableStateOf(app.currentLimitMinutes?.toString().orEmpty())
+    var detailsDraft by remember(
+        app.packageName,
+        app.currentLimitMinutes,
+        app.lockUntilTimestamp
+    ) {
+        mutableStateOf(
+            AppLimitDetailsDraft(
+                minutes = app.currentLimitMinutes ?: 0,
+                duration = if (editMode) remainingDays else 1,
+                durationUnit = initialDurationUnit,
+                durationEdited = false
+            )
+        )
     }
     var behavior by remember(app.packageName, app.lockMode) {
         mutableStateOf(
@@ -119,32 +160,32 @@ fun AppLimitRedesignedSheet(
             }
         )
     }
-    var durationAmount by remember(app.packageName, app.lockUntilTimestamp) {
-        mutableStateOf(if (editMode) remainingDays.toString() else "1")
-    }
-    var durationUnit by remember(app.packageName, app.lockUntilTimestamp) {
-        mutableStateOf(
-            if (editMode) UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS
-            else UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS
+
+    val calculatedRuleEnd = remember(
+        now,
+        detailsDraft.duration,
+        detailsDraft.durationUnit
+    ) {
+        UsageLimitBehaviorPolicy.calculateRuleEndMillis(
+            nowMillis = now,
+            amount = detailsDraft.duration,
+            unit = detailsDraft.durationUnit
         )
     }
-    var durationEdited by remember(app.packageName, app.lockUntilTimestamp) {
-        mutableStateOf(false)
+    val ruleEnd = remember(
+        activeExistingRuleEnd,
+        detailsDraft.durationEdited,
+        calculatedRuleEnd
+    ) {
+        UsageLimitBehaviorPolicy.resolveRuleEndForEdit(
+            existingRuleEndMillis = activeExistingRuleEnd,
+            durationEdited = detailsDraft.durationEdited,
+            calculatedRuleEndMillis = calculatedRuleEnd
+        )
     }
-
-    val enteredMinutes = dailyMinutes.toIntOrNull() ?: 0
-    val enteredDuration = durationAmount.toIntOrNull() ?: 0
-    val calculatedRuleEnd = UsageLimitBehaviorPolicy.calculateRuleEndMillis(
-        nowMillis = now,
-        amount = enteredDuration,
-        unit = durationUnit
-    )
-    val ruleEnd = UsageLimitBehaviorPolicy.resolveRuleEndForEdit(
-        existingRuleEndMillis = activeExistingRuleEnd,
-        durationEdited = durationEdited,
-        calculatedRuleEndMillis = calculatedRuleEnd
-    )
-    val canAdvance = enteredMinutes > 0 && enteredDuration > 0 && ruleEnd != null
+    val canSave = detailsDraft.minutes > 0 &&
+        detailsDraft.duration > 0 &&
+        ruleEnd != null
 
     val pauseLabel = stringResource(R.string.limits_pause_30_option)
     val blockTomorrowLabel = stringResource(R.string.limits_block_tomorrow_option)
@@ -156,11 +197,12 @@ fun AppLimitRedesignedSheet(
     } else {
         blockTomorrowLabel
     }
-    val durationUnitLabel = when (durationUnit) {
+    val durationUnitLabel = when (detailsDraft.durationUnit) {
         UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS -> daysLabel
         UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS -> weeksLabel
         UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS -> monthsLabel
     }
+    val focusManager = LocalFocusManager.current
 
     BackHandler(enabled = step == AppLimitEditorStep.BLOCK_MODE) {
         step = AppLimitEditorStep.DETAILS
@@ -186,6 +228,9 @@ fun AppLimitRedesignedSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // Keep only an upper bound. A hard minimum fought MainActivity's
+                // adjustResize window while the numeric IME was opening/closing,
+                // forcing the whole sheet through repeated constraint passes.
                 .heightIn(max = 760.dp)
         ) {
             AppLimitSheetHeader(
@@ -199,28 +244,19 @@ fun AppLimitRedesignedSheet(
                 AppLimitEditorStep.DETAILS -> {
                     AppLimitDetailsScreen(
                         permissionsMissing = permissionsMissing,
-                        dailyMinutes = dailyMinutes,
-                        onDailyMinutesChange = { raw ->
-                            dailyMinutes = raw.filter(Char::isDigit).take(4)
-                        },
-                        enteredMinutes = enteredMinutes,
-                        durationAmount = durationAmount,
-                        onDurationAmountChange = { raw ->
-                            durationEdited = true
-                            durationAmount = raw.filter(Char::isDigit).take(3)
-                        },
-                        enteredDuration = enteredDuration,
-                        durationUnit = durationUnit,
-                        onDurationUnitChange = {
-                            durationEdited = true
-                            durationUnit = it
-                        },
+                        initialDraft = detailsDraft,
+                        nowMillis = now,
                         editMode = editMode,
                         currentRuleEnd = app.lockUntilTimestamp,
                         onRemove = { onSave(null, false, "NONE", null, null) },
                         onDismiss = onDismiss,
-                        canAdvance = canAdvance,
-                        onContinue = { step = AppLimitEditorStep.BLOCK_MODE }
+                        onContinue = { draft ->
+                            // Commit the local text-field state once, instead of
+                            // propagating every keystroke through the whole sheet.
+                            detailsDraft = draft
+                            focusManager.clearFocus(force = true)
+                            step = AppLimitEditorStep.BLOCK_MODE
+                        }
                     )
                 }
 
@@ -228,11 +264,11 @@ fun AppLimitRedesignedSheet(
                     AppLimitBehaviorScreen(
                         behavior = behavior,
                         onBehaviorChange = { behavior = it },
-                        minutes = enteredMinutes,
-                        duration = enteredDuration,
+                        minutes = detailsDraft.minutes,
+                        duration = detailsDraft.duration,
                         durationUnitLabel = durationUnitLabel,
                         behaviorLabel = selectedBehaviorLabel,
-                        canSave = canAdvance,
+                        canSave = canSave,
                         onBack = { step = AppLimitEditorStep.DETAILS },
                         onSave = {
                             val persistedMode = if (
@@ -242,7 +278,7 @@ fun AppLimitRedesignedSheet(
                             } else {
                                 UsageLimitBehaviorPolicy.blockUntilTomorrowModeFor(app.packageName)
                             }
-                            onSave(enteredMinutes, true, persistedMode, null, ruleEnd)
+                            onSave(detailsDraft.minutes, true, persistedMode, null, ruleEnd)
                         }
                     )
                 }
@@ -292,25 +328,44 @@ private fun AppLimitSheetHeader(
 @Composable
 private fun AppLimitDetailsScreen(
     permissionsMissing: Boolean,
-    dailyMinutes: String,
-    onDailyMinutesChange: (String) -> Unit,
-    enteredMinutes: Int,
-    durationAmount: String,
-    onDurationAmountChange: (String) -> Unit,
-    enteredDuration: Int,
-    durationUnit: UsageLimitBehaviorPolicy.RuleDurationUnit,
-    onDurationUnitChange: (UsageLimitBehaviorPolicy.RuleDurationUnit) -> Unit,
+    initialDraft: AppLimitDetailsDraft,
+    nowMillis: Long,
     editMode: Boolean,
     currentRuleEnd: Long?,
     onRemove: () -> Unit,
     onDismiss: () -> Unit,
-    canAdvance: Boolean,
-    onContinue: () -> Unit
+    onContinue: (AppLimitDetailsDraft) -> Unit
 ) {
+    val dailyMinutesState = remember(initialDraft) {
+        mutableStateOf(initialDraft.minutes.takeIf { it > 0 }?.toString().orEmpty())
+    }
+    val durationAmountState = remember(initialDraft) {
+        mutableStateOf(initialDraft.duration.takeIf { it > 0 }?.toString().orEmpty())
+    }
+    val durationUnitState = remember(initialDraft) { mutableStateOf(initialDraft.durationUnit) }
+    val durationEditedState = remember(initialDraft) { mutableStateOf(initialDraft.durationEdited) }
+
+    // This parent only observes whether the form crosses the valid/invalid boundary.
+    // Character changes that keep the same validity stay in their small editor
+    // subtree instead of recomposing both sections, the footer and the scroll host.
+    val canAdvance by remember(dailyMinutesState, durationAmountState) {
+        derivedStateOf {
+            (dailyMinutesState.value.toIntOrNull() ?: 0) > 0 &&
+                (durationAmountState.value.toIntOrNull() ?: 0) > 0
+        }
+    }
+    val formattedCurrentRuleEnd = remember(editMode, currentRuleEnd, nowMillis) {
+        currentRuleEnd
+            ?.takeIf { editMode && it > nowMillis }
+            ?.let { end ->
+                SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(end))
+            }
+    }
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp)
         ) {
@@ -319,106 +374,21 @@ private fun AppLimitDetailsScreen(
             UsageLimitDecisionBlock(
                 title = stringResource(R.string.limits_daily_max_title)
             ) {
-                OutlinedTextField(
-                    value = dailyMinutes,
-                    onValueChange = onDailyMinutesChange,
-                    label = { Text(stringResource(R.string.limits_daily_max_minutes_label)) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        color = TextPrimary,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentCyan,
-                        unfocusedBorderColor = CardBorder,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
-                )
-                Spacer(Modifier.height(12.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(15, 30, 60, 120).forEach { minutes ->
-                        FilterChip(
-                            selected = enteredMinutes == minutes,
-                            onClick = { onDailyMinutesChange(minutes.toString()) },
-                            label = { Text("$minutes min") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AccentCyan.copy(alpha = 0.18f),
-                                selectedLabelColor = AccentCyan
-                            )
-                        )
-                    }
-                }
+                DailyMinutesEditor(dailyMinutesState)
             }
 
             UsageLimitDecisionBlock(
                 title = stringResource(R.string.limits_rule_duration_title),
                 showDivider = false
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedTextField(
-                        value = durationAmount,
-                        onValueChange = onDurationAmountChange,
-                        label = { Text(stringResource(R.string.limits_duration_amount_label)) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.width(112.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = AccentCyan,
-                            unfocusedBorderColor = CardBorder,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
-                    )
-                    Text(
-                        enteredDuration.takeIf { it > 0 }?.toString().orEmpty(),
-                        color = Color.Transparent,
-                        modifier = Modifier.size(0.dp)
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    DurationUnitChip(
-                        selected = durationUnit == UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS,
-                        label = stringResource(R.string.limits_duration_days),
-                        onClick = {
-                            onDurationUnitChange(UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS)
-                        }
-                    )
-                    DurationUnitChip(
-                        selected = durationUnit == UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS,
-                        label = stringResource(R.string.limits_duration_weeks),
-                        onClick = {
-                            onDurationUnitChange(UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS)
-                        }
-                    )
-                    DurationUnitChip(
-                        selected = durationUnit == UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS,
-                        label = stringResource(R.string.limits_duration_months),
-                        onClick = {
-                            onDurationUnitChange(UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS)
-                        }
-                    )
-                }
+                RuleDurationEditor(
+                    durationAmountState = durationAmountState,
+                    durationUnitState = durationUnitState,
+                    durationEditedState = durationEditedState
+                )
             }
 
-            if (editMode && currentRuleEnd?.let { it > System.currentTimeMillis() } == true) {
-                val formatted = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-                    .format(Date(currentRuleEnd))
+            formattedCurrentRuleEnd?.let { formatted ->
                 Text(
                     stringResource(R.string.limits_rule_current_until, formatted),
                     color = TextHint,
@@ -462,7 +432,16 @@ private fun AppLimitDetailsScreen(
             }
             Button(
                 enabled = canAdvance,
-                onClick = onContinue,
+                onClick = {
+                    onContinue(
+                        AppLimitDetailsDraft(
+                            minutes = dailyMinutesState.value.toIntOrNull() ?: 0,
+                            duration = durationAmountState.value.toIntOrNull() ?: 0,
+                            durationUnit = durationUnitState.value,
+                            durationEdited = durationEditedState.value
+                        )
+                    )
+                },
                 modifier = Modifier
                     .weight(1f)
                     .height(50.dp),
@@ -485,6 +464,107 @@ private fun AppLimitDetailsScreen(
 }
 
 @Composable
+private fun DailyMinutesEditor(dailyMinutesState: MutableState<String>) {
+    val enteredMinutes = remember(dailyMinutesState.value) {
+        dailyMinutesState.value.toIntOrNull() ?: 0
+    }
+    OutlinedTextField(
+        value = dailyMinutesState.value,
+        onValueChange = { raw ->
+            dailyMinutesState.value = raw.filter(Char::isDigit).take(4)
+        },
+        label = { Text(stringResource(R.string.limits_daily_max_minutes_label)) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        textStyle = androidx.compose.ui.text.TextStyle(
+            color = TextPrimary,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        ),
+        modifier = Modifier.fillMaxWidth(),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = AccentCyan,
+            unfocusedBorderColor = CardBorder,
+            focusedTextColor = TextPrimary,
+            unfocusedTextColor = TextPrimary
+        )
+    )
+    Spacer(Modifier.height(12.dp))
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        listOf(15, 30, 60, 120).forEach { minutes ->
+            FilterChip(
+                selected = enteredMinutes == minutes,
+                onClick = { dailyMinutesState.value = minutes.toString() },
+                label = { Text("$minutes min") },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = AccentCyan.copy(alpha = 0.18f),
+                    selectedLabelColor = AccentCyan
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun RuleDurationEditor(
+    durationAmountState: MutableState<String>,
+    durationUnitState: MutableState<UsageLimitBehaviorPolicy.RuleDurationUnit>,
+    durationEditedState: MutableState<Boolean>
+) {
+    OutlinedTextField(
+        value = durationAmountState.value,
+        onValueChange = { raw ->
+            durationEditedState.value = true
+            durationAmountState.value = raw.filter(Char::isDigit).take(3)
+        },
+        label = { Text(stringResource(R.string.limits_duration_amount_label)) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.width(112.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = AccentCyan,
+            unfocusedBorderColor = CardBorder,
+            focusedTextColor = TextPrimary,
+            unfocusedTextColor = TextPrimary
+        )
+    )
+    Spacer(Modifier.height(10.dp))
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        DurationUnitChip(
+            selected = durationUnitState.value == UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS,
+            label = stringResource(R.string.limits_duration_days),
+            onClick = {
+                durationEditedState.value = true
+                durationUnitState.value = UsageLimitBehaviorPolicy.RuleDurationUnit.DAYS
+            }
+        )
+        DurationUnitChip(
+            selected = durationUnitState.value == UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS,
+            label = stringResource(R.string.limits_duration_weeks),
+            onClick = {
+                durationEditedState.value = true
+                durationUnitState.value = UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS
+            }
+        )
+        DurationUnitChip(
+            selected = durationUnitState.value == UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS,
+            label = stringResource(R.string.limits_duration_months),
+            onClick = {
+                durationEditedState.value = true
+                durationUnitState.value = UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS
+            }
+        )
+    }
+}
+
+@Composable
 private fun AppLimitBehaviorScreen(
     behavior: String,
     onBehaviorChange: (String) -> Unit,
@@ -499,7 +579,7 @@ private fun AppLimitBehaviorScreen(
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp, vertical = 20.dp)
         ) {

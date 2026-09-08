@@ -47,6 +47,60 @@ class UsageLimitForegroundPolicyTest {
     }
 
     @Test
+    fun `measurement pulse skips FocusGuard launcher and apps without an active limit`() {
+        val focusGuard = "com.focusguard.v2"
+        val launcher = "com.example.launcher"
+        val limitedApp = "com.example.video"
+        val activeLimitPackages = setOf(limitedApp, focusGuard)
+
+        assertThat(
+            UsageLimitForegroundPolicy.shouldMeasureCurrentApp(
+                foregroundPackageName = focusGuard,
+                activeLimitPackages = activeLimitPackages,
+                focusGuardPackageName = focusGuard,
+                launcherPackageName = launcher,
+                isDeviceInteractive = true
+            )
+        ).isFalse()
+        assertThat(
+            UsageLimitForegroundPolicy.shouldMeasureCurrentApp(
+                foregroundPackageName = launcher,
+                activeLimitPackages = activeLimitPackages,
+                focusGuardPackageName = focusGuard,
+                launcherPackageName = launcher,
+                isDeviceInteractive = true
+            )
+        ).isFalse()
+        assertThat(
+            UsageLimitForegroundPolicy.shouldMeasureCurrentApp(
+                foregroundPackageName = "com.example.other",
+                activeLimitPackages = activeLimitPackages,
+                focusGuardPackageName = focusGuard,
+                launcherPackageName = launcher,
+                isDeviceInteractive = true
+            )
+        ).isFalse()
+        assertThat(
+            UsageLimitForegroundPolicy.shouldMeasureCurrentApp(
+                foregroundPackageName = limitedApp,
+                activeLimitPackages = activeLimitPackages,
+                focusGuardPackageName = focusGuard,
+                launcherPackageName = launcher,
+                isDeviceInteractive = true
+            )
+        ).isTrue()
+        assertThat(
+            UsageLimitForegroundPolicy.shouldMeasureCurrentApp(
+                foregroundPackageName = limitedApp,
+                activeLimitPackages = activeLimitPackages,
+                focusGuardPackageName = focusGuard,
+                launcherPackageName = launcher,
+                isDeviceInteractive = false
+            )
+        ).isFalse()
+    }
+
+    @Test
     fun `an exceeded app is enforced while it remains in the foreground`() {
         assertThat(
             UsageLimitForegroundPolicy.shouldEnforceCurrentApp(

@@ -517,6 +517,8 @@ class BlockingAccessibilityService : AccessibilityService() {
     @Volatile private var focusModeFallbackActive = false
     @Volatile private var focusModeBlockedAppsSet: Set<String> = emptySet()
     @Volatile private var focusModeAllowedAppsSet: Set<String> = emptySet()
+    @Volatile private var activeAppLimitsByPackage:
+        Map<String, com.focusguard.database.AppUsageLimit> = emptyMap()
     @Volatile private var hasActiveAppLimits = false
     @Volatile private var lastEnforcementFingerprint: String? = null
 
@@ -1073,6 +1075,22 @@ class BlockingAccessibilityService : AccessibilityService() {
             // ahead of the decision to bounce them out.
             val directPackage = event.packageName?.toString().orEmpty()
 
+            // Events produced by FocusGuard's own Compose UI never need target,
+            // browser or Settings inspection. Text fields generate dense focus/text
+            // event bursts, so returning here keeps that work off the interaction path.
+            // Keep the foreground snapshot accurate so app-limit polling also takes
+            // its existing no-measurement fast path while FocusGuard is visible.
+            if (directPackage == this.packageName) {
+                foregroundPackageName = directPackage
+                if (
+                    event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                    event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
+                ) {
+                    stopWebsiteTracking()
+                }
+                return
+            }
+
             // An in-flight website transition still consumes browser events, but
             // first gives them a chance to prove that the requested safe surface
             // is actually visible. The curtain is never released on elapsed time.
@@ -1437,6 +1455,7 @@ class BlockingAccessibilityService : AccessibilityService() {
                                 opaqueBrowserFirstSeenElapsed.clear()
                                 opaqueBrowserVerificationScheduled.clear()
                             }
+                            activeAppLimitsByPackage = activeAppLimits.associateBy { it.packageName }
                             hasActiveAppLimits = activeAppLimits.isNotEmpty()
                             isBlockingSessionActive = isSelfProtectionEngaged(
                                 cachedActive = enforcingSessions.isNotEmpty() ||
@@ -1543,9 +1562,19 @@ class BlockingAccessibilityService : AccessibilityService() {
 
                 try {
                     val packageName = foregroundPackageName ?: continue
+                    val activeLimits = activeAppLimitsByPackage
+                    if (!UsageLimitForegroundPolicy.shouldMeasureCurrentApp(
+                            foregroundPackageName = packageName,
+                            activeLimitPackages = activeLimits.keys,
+                            focusGuardPackageName = this@BlockingAccessibilityService.packageName,
+                            launcherPackageName = defaultLauncherPackage,
+                            isDeviceInteractive = true
+                        )
+                    ) continue
+                    val currentLimit = activeLimits[packageName] ?: continue
                     val shouldEnforce = UsageLimitForegroundPolicy.shouldEnforceCurrentApp(
                         foregroundPackageName = packageName,
-                        exceededPackages = calculateExceededAppLimits(),
+                        exceededPackages = calculateExceededAppLimits(listOf(currentLimit)),
                         focusGuardPackageName = this@BlockingAccessibilityService.packageName,
                         launcherPackageName = defaultLauncherPackage,
                         isDeviceInteractive = true
@@ -1741,7 +1770,7 @@ class BlockingAccessibilityService : AccessibilityService() {
         }
 
         FocusGuardLogger.log(
-            "A11y",
+            "FocusMode",
             "Pomodoro rigoroso bloqueou $packageName ($className)"
         )
         performGlobalAction(GLOBAL_ACTION_HOME)

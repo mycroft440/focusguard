@@ -15,9 +15,16 @@ object UsageLimitForegroundPolicy {
             !trackedPackageName.isNullOrBlank() &&
             trackedPackageName == foregroundPackageName
 
-    fun shouldEnforceCurrentApp(
+    /**
+     * Cheap guard for the one-second app-limit pulse.
+     *
+     * This must run before Room/UsageStats work. FocusGuard itself, the launcher,
+     * a blank foreground package, a screen-off device, or an app with no active
+     * limit cannot possibly need app-limit measurement on that pulse.
+     */
+    fun shouldMeasureCurrentApp(
         foregroundPackageName: String?,
-        exceededPackages: Set<String>,
+        activeLimitPackages: Set<String>,
         focusGuardPackageName: String,
         launcherPackageName: String?,
         isDeviceInteractive: Boolean
@@ -26,5 +33,20 @@ object UsageLimitForegroundPolicy {
             !foregroundPackageName.isNullOrBlank() &&
             foregroundPackageName != focusGuardPackageName &&
             foregroundPackageName != launcherPackageName &&
-            foregroundPackageName in exceededPackages
+            foregroundPackageName in activeLimitPackages
+
+    fun shouldEnforceCurrentApp(
+        foregroundPackageName: String?,
+        exceededPackages: Set<String>,
+        focusGuardPackageName: String,
+        launcherPackageName: String?,
+        isDeviceInteractive: Boolean
+    ): Boolean =
+        shouldMeasureCurrentApp(
+            foregroundPackageName = foregroundPackageName,
+            activeLimitPackages = exceededPackages,
+            focusGuardPackageName = focusGuardPackageName,
+            launcherPackageName = launcherPackageName,
+            isDeviceInteractive = isDeviceInteractive
+        )
 }
