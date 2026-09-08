@@ -3,10 +3,12 @@ package com.focusguard.usage
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import com.focusguard.database.AppDatabase
+import com.focusguard.database.AppUsageLimit
 import com.focusguard.database.BlockSession
 import com.focusguard.manager.BlockingSessionManager
 import com.focusguard.utils.AppUsageLimitActivationUsage
 import com.focusguard.utils.UsageLimitForegroundPolicy
+import com.focusguard.utils.WebsiteUsageLimitPolicy
 import java.util.Calendar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -49,13 +51,6 @@ object UsageImpactRouter {
             val mode = limit.lockMode.trim().uppercase()
             if (mode == "PASSWORD" || mode == "WARNING") return@withContext false
 
-            if (mode == "TIME") {
-                val lockUntil = limit.lockUntilTimestamp ?: return@withContext false
-                val blocked = lockUntil > now
-                if (blocked) UsageInterventionStore.syncFromLimit(appContext, limit)
-                return@withContext blocked
-            }
-
             val manager = appContext.getSystemService(Context.USAGE_STATS_SERVICE)
                 as? UsageStatsManager ?: return@withContext false
             val startOfDay = Calendar.getInstance().apply {
@@ -78,11 +73,41 @@ object UsageImpactRouter {
                 nowMillis = now
             )
 
-            val blocked = UsageLimitForegroundPolicy.usedMinutes(usedMillis) >=
-                limit.dailyLimitMinutes
+            val blocked = shouldRouteConfiguredAppLimit(
+                limit = limit,
+                usedMillis = usedMillis,
+                nowMillis = now
+            )
             if (blocked) UsageInterventionStore.syncFromLimit(appContext, limit)
             blocked
         }
+
+    /**
+     * Canonical bridge between usage measurement and the post-limit behavior.
+     *
+     * Merely having a configured limit is never enough to own the interception:
+     * the allowance must be exhausted and the selected behavior must be blocking
+     * at this exact instant. This distinction is what lets PASSWORD own the app
+     * before the quota, lets PAUSE_30 release it again after thirty minutes, and
+     * makes a TIME-hardened limit respect the quota instead of blocking early.
+     */
+    internal fun shouldRouteConfiguredAppLimit(
+        limit: AppUsageLimit,
+        usedMillis: Long,
+        nowMillis: Long
+    ): Boolean {
+        if (!limit.isEnabled || !limit.preventOpeningAfterLimit) return false
+        val mode = limit.lockMode.trim().uppercase()
+        if (mode == "PASSWORD" || mode == "WARNING") return false
+
+        return WebsiteUsageLimitPolicy.shouldBlock(
+            usedMillis = usedMillis,
+            dailyLimitMinutes = limit.dailyLimitMinutes,
+            lockMode = limit.lockMode,
+            lockUntilTimestamp = limit.lockUntilTimestamp,
+            nowMillis = nowMillis
+        )
+    }
 
     private suspend fun findActiveTimedSessionForApp(
         context: Context,

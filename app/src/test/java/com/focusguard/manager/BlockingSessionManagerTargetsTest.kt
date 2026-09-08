@@ -213,4 +213,49 @@ class BlockingSessionManagerTargetsTest {
             )
         ).isFalse()
     }
+
+    @Test
+    fun `device owner keeps password only target launchable for accessibility auth`() {
+        assertThat(
+            BlockingSessionManager.packagesForDeviceOwnerSuspension(
+                enforcedPackages = listOf("com.example.password"),
+                passwordSessionPackages = listOf("com.example.password"),
+                strongerProtectionPackages = emptyList()
+            )
+        ).isEmpty()
+    }
+
+    @Test
+    fun `device owner suspends password target once daily limit becomes stronger`() {
+        assertThat(
+            BlockingSessionManager.packagesForDeviceOwnerSuspension(
+                enforcedPackages = listOf("com.example.password"),
+                passwordSessionPackages = listOf("com.example.password"),
+                strongerProtectionPackages = listOf("com.example.password")
+            )
+        ).containsExactly("com.example.password")
+    }
+
+    @Test
+    fun `device owner keeps unrelated non password targets suspended`() {
+        assertThat(
+            BlockingSessionManager.packagesForDeviceOwnerSuspension(
+                enforcedPackages = listOf("com.example.password", "com.example.time"),
+                passwordSessionPackages = listOf("com.example.password"),
+                strongerProtectionPackages = listOf("com.example.time")
+            )
+        ).containsExactly("com.example.time")
+    }
+
+    @Test
+    fun `strict pomodoro suspends password target too`() {
+        assertThat(
+            BlockingSessionManager.packagesForDeviceOwnerSuspension(
+                enforcedPackages = listOf("com.example.password", "com.example.other"),
+                passwordSessionPackages = listOf("com.example.password"),
+                strongerProtectionPackages = emptyList(),
+                strictPomodoro = true
+            )
+        ).containsExactly("com.example.password", "com.example.other").inOrder()
+    }
 }

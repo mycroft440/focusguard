@@ -375,6 +375,32 @@ class BlockingSessionManager @Inject constructor(
             hasBlockedSites ||
             adultFilterEnabled ||
             focusModeActive
+        /**
+         * Device Owner package suspension must not swallow an interactive
+         * PASSWORD attempt before Accessibility can present its credential UI.
+         * PASSWORD stays launchable only while no stronger protection owns it.
+         */
+        internal fun packagesForDeviceOwnerSuspension(
+            enforcedPackages: Collection<String>,
+            passwordSessionPackages: Collection<String>,
+            strongerProtectionPackages: Collection<String>,
+            strictPomodoro: Boolean = false
+        ): List<String> {
+            val enforced = enforcedPackages.filter(String::isNotBlank).distinct()
+            if (strictPomodoro) return enforced
+
+            val passwordTargets = passwordSessionPackages
+                .filter(String::isNotBlank)
+                .toSet()
+            if (passwordTargets.isEmpty()) return enforced
+
+            val strongerTargets = strongerProtectionPackages
+                .filter(String::isNotBlank)
+                .toSet()
+            return enforced.filter { packageName ->
+                packageName !in passwordTargets || packageName in strongerTargets
+            }
+        }
     }
 
     @dagger.hilt.EntryPoint
@@ -1409,6 +1435,12 @@ class BlockingSessionManager @Inject constructor(
                     participatesInBlocking(it) && isCurrentlyInBlockingWindow(it)
                 }
                 val enforcingIds = enforcingSessions.map { it.id }
+                val passwordSessionIds = enforcingSessions
+                    .filter { it.sessionType == "PASSWORD" }
+                    .map { it.id }
+                val strongerSessionIds = enforcingSessions
+                    .filter { it.sessionType != "PASSWORD" }
+                    .map { it.id }
                 val strictPomodoro = enforcingSessions.any {
                     it.sessionType == "POMODORO" && it.isBlockingEnabled
                 }
@@ -1421,6 +1453,13 @@ class BlockingSessionManager @Inject constructor(
                     getAppsForSessions(enforcingIds)
                 }
                 val sessionSites = getSitesForSessions(enforcingIds)
+                val passwordSessionApps = getAppsForSessions(passwordSessionIds)
+                val strongerSessionApps = if (strictPomodoro) {
+                    sessionApps
+                } else {
+                    getAppsForSessions(strongerSessionIds)
+                }
+                val strongerSessionSites = getSitesForSessions(strongerSessionIds)
 
                 val activeAppLimits = database.appUsageLimitDao().getAllActiveLimitsStatic()
                 val limitApps = getExceededAppLimits(activeAppLimits, now)
@@ -1500,6 +1539,9 @@ class BlockingSessionManager @Inject constructor(
                 } else {
                     emptyList()
                 }
+                val strongerWebsiteApps = WebsiteBlocker.appPackageDomainsFor(
+                    strongerSessionSites + limitSites + adultFilterRules
+                ).keys.filter(::isPackageInstalled)
                 val sitesToBlock = (sessionSites + limitSites + appFamilySites + adultFilterRules)
                     .map(WebsiteBlocker::normalizeRule)
                     .filter { it.isNotBlank() }
@@ -1518,6 +1560,13 @@ class BlockingSessionManager @Inject constructor(
                     focusModeBlockedPackages = focusModeApps,
                     focusModeAllowedPackages = focusModeSession?.allowedPackages.orEmpty()
                 ).toList()
+                val deviceOwnerAppsToSuspend = packagesForDeviceOwnerSuspension(
+                    enforcedPackages = appsToBlock,
+                    passwordSessionPackages = passwordSessionApps,
+                    strongerProtectionPackages =
+                        strongerSessionApps + limitApps + strongerWebsiteApps + focusModeApps,
+                    strictPomodoro = strictPomodoro
+                )
                 val nativeFocusLockdownActive = focusModeSession != null &&
                     FocusModePolicy.usesNativeFocusLockdown(
                         deviceOwnerActive = deviceOwnerManager.isDeviceOwnerActive(),
@@ -1547,8 +1596,8 @@ class BlockingSessionManager @Inject constructor(
 
                 deviceOwnerManager.syncSuspendedApps(
                     allAppsInSessions = allKnownApps,
-                    appsToBlockNow = appsToBlock,
-                    allowedSystemApps = appsToBlock.toSet()
+                    appsToBlockNow = deviceOwnerAppsToSuspend,
+                    allowedSystemApps = deviceOwnerAppsToSuspend.toSet()
                 )
 
                 if (sitesToBlock.isEmpty() && !adultFilterEnabled) {
