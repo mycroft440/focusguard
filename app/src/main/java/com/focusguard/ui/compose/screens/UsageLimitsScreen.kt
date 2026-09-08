@@ -80,8 +80,15 @@ fun UsageLimitsScreen(
     }
 
     DisposableEffect(lifecycleOwner) {
+        var initialResumeObserved = false
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) permissionResumeKey++
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (initialResumeObserved) {
+                    permissionResumeKey++
+                } else {
+                    initialResumeObserved = true
+                }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
