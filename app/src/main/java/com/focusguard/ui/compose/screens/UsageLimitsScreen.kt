@@ -57,6 +57,29 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@Stable
+class AppLimitsTabState {
+    internal val apps = mutableStateOf<List<UsageLimitAppUi>>(emptyList())
+    internal val socialPackages = mutableStateOf<Set<String>>(emptySet())
+    internal val searchQuery = mutableStateOf("")
+    internal val isLoading = mutableStateOf(true)
+    internal var hasLoaded = false
+}
+
+@Stable
+class WebsiteLimitsSharedState {
+    internal val allConfiguredCount = mutableIntStateOf(0)
+}
+
+@Stable
+class WebsiteLimitsTabState(
+    internal val shared: WebsiteLimitsSharedState
+) {
+    internal val sites = mutableStateOf<List<WebsiteLimitUi>>(emptyList())
+    internal val isLoading = mutableStateOf(true)
+    internal var hasLoaded = false
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UsageLimitsScreen(
@@ -70,6 +93,14 @@ fun UsageLimitsScreen(
     var permissionResumeKey by remember { mutableIntStateOf(0) }
     var protectionPermissionsReady by remember { mutableStateOf<Boolean?>(null) }
     var credentialRevision by remember { mutableIntStateOf(0) }
+    val appLimitsState = remember { AppLimitsTabState() }
+    val websiteLimitsSharedState = remember { WebsiteLimitsSharedState() }
+    val websiteLimitsState = remember(websiteLimitsSharedState) {
+        WebsiteLimitsTabState(websiteLimitsSharedState)
+    }
+    val keywordLimitsState = remember(websiteLimitsSharedState) {
+        WebsiteLimitsTabState(websiteLimitsSharedState)
+    }
     val credentialManager = remember(context) { DeactivationCredentialManager(context) }
     val hasMasterCredential = remember(credentialRevision) { credentialManager.hasCredential() }
     val masterPasswordLauncher = rememberLauncherForActivityResult(
@@ -164,7 +195,8 @@ fun UsageLimitsScreen(
                     authManager = authManager,
                     hasMasterCredential = hasMasterCredential,
                     onConfigureMasterPassword = openMasterPassword,
-                    onPermissionsRequired = onPermissionsRequired
+                    onPermissionsRequired = onPermissionsRequired,
+                    state = appLimitsState
                 )
                 1 -> WebsiteLimitsTab(
                     permissionsMissing = false,
@@ -172,7 +204,8 @@ fun UsageLimitsScreen(
                     hasMasterCredential = hasMasterCredential,
                     onConfigureMasterPassword = openMasterPassword,
                     onPermissionsRequired = onPermissionsRequired,
-                    keywordMode = false
+                    keywordMode = false,
+                    state = websiteLimitsState
                 )
                 else -> WebsiteLimitsTab(
                     permissionsMissing = false,
@@ -180,7 +213,8 @@ fun UsageLimitsScreen(
                     hasMasterCredential = hasMasterCredential,
                     onConfigureMasterPassword = openMasterPassword,
                     onPermissionsRequired = onPermissionsRequired,
-                    keywordMode = true
+                    keywordMode = true,
+                    state = keywordLimitsState
                 )
             }
         }
@@ -284,16 +318,17 @@ fun AppLimitsTab(
     authManager: AuthManager,
     hasMasterCredential: Boolean,
     onConfigureMasterPassword: () -> Unit,
-    onPermissionsRequired: () -> Unit
+    onPermissionsRequired: () -> Unit,
+    state: AppLimitsTabState
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val db = rememberAppDatabase()
     val blockingSessionManager = remember(context) { BlockingSessionManager.getInstance(context) }
-    var apps by remember { mutableStateOf<List<UsageLimitAppUi>>(emptyList()) }
-    var socialPackages by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var searchQuery by remember { mutableStateOf("") }
-    var isLoading by remember { mutableStateOf(true) }
+    var apps by state.apps
+    var socialPackages by state.socialPackages
+    var searchQuery by state.searchQuery
+    var isLoading by state.isLoading
     var selectedApp by remember { mutableStateOf<UsageLimitAppUi?>(null) }
     var showDialog by remember { mutableStateOf(false) }
     var showMasterCredentialConfirm by remember { mutableStateOf(false) }
@@ -329,7 +364,8 @@ fun AppLimitsTab(
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(state) {
+        if (state.hasLoaded) return@LaunchedEffect
         withContext(Dispatchers.IO) {
             val pm = context.packageManager
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -432,6 +468,7 @@ fun AppLimitsTab(
                 apps = loadedApps
                 socialPackages = discoveredSocialPackages
                 isLoading = false
+                state.hasLoaded = true
             }
         }
     }
@@ -677,15 +714,16 @@ fun WebsiteLimitsTab(
     hasMasterCredential: Boolean,
     onConfigureMasterPassword: () -> Unit,
     onPermissionsRequired: () -> Unit,
-    keywordMode: Boolean = false
+    keywordMode: Boolean = false,
+    state: WebsiteLimitsTabState
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val db = rememberAppDatabase()
     val blockingSessionManager = remember(context) { BlockingSessionManager.getInstance(context) }
-    var sites by remember(keywordMode) { mutableStateOf<List<WebsiteLimitUi>>(emptyList()) }
-    var allConfiguredCount by remember { mutableIntStateOf(0) }
-    var isLoading by remember(keywordMode) { mutableStateOf(true) }
+    var sites by state.sites
+    var allConfiguredCount by state.shared.allConfiguredCount
+    var isLoading by state.isLoading
     var showAddDialog by remember { mutableStateOf(false) }
     var initialRuleForAdd by remember { mutableStateOf<String?>(null) }
     var selectedSite by remember { mutableStateOf<WebsiteLimitUi?>(null) }
@@ -726,7 +764,8 @@ fun WebsiteLimitsTab(
         }
     }
 
-    LaunchedEffect(keywordMode) {
+    LaunchedEffect(state) {
+        if (state.hasLoaded) return@LaunchedEffect
         withContext(Dispatchers.IO) {
             val today = java.text.SimpleDateFormat(
                 "yyyy-MM-dd",
@@ -759,6 +798,7 @@ fun WebsiteLimitsTab(
                 sites = loaded
                 allConfiguredCount = allLimits.size
                 isLoading = false
+                state.hasLoaded = true
             }
         }
     }
