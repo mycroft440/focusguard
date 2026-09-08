@@ -13,9 +13,15 @@ import androidx.lifecycle.LifecycleOwner
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class CameraManager(private val context: Context) {
+
+    private data class CapturedPhoto(
+        val file: File,
+        val capturedAtMillis: Long
+    )
 
     private var imageCapture: ImageCapture? = null
 
@@ -33,10 +39,12 @@ class CameraManager(private val context: Context) {
 
         val completionDelivered = AtomicBoolean(false)
         val timeoutHandler = Handler(Looper.getMainLooper())
+        val mainExecutor = ContextCompat.getMainExecutor(context)
         var cameraProvider: ProcessCameraProvider? = null
         var timeoutRunnable: Runnable? = null
 
-        fun finishOnce(file: File?) {
+        fun finishOnce(capturedPhoto: CapturedPhoto?) {
+            val file = capturedPhoto?.file
             if (!completionDelivered.compareAndSet(false, true)) {
                 // A result arriving after timeout is stale. Never leave an
                 // untracked intruder image behind from a callback the caller has
@@ -47,7 +55,36 @@ class CameraManager(private val context: Context) {
             timeoutRunnable?.let(timeoutHandler::removeCallbacks)
             runCatching { cameraProvider?.unbindAll() }
             isCapturing.set(false)
-            onComplete(file)
+
+            if (capturedPhoto == null) {
+                onComplete(null)
+                return
+            }
+
+            // CameraX is finished at this point, so the five-second camera timeout
+            // no longer races a potentially expensive JPEG decode/re-encode. Burn
+            // the timestamp off the main thread, then return the final file to the
+            // attempt controller. If post-processing fails, keep the raw evidence.
+            val submitted = runCatching {
+                PHOTO_POST_PROCESSOR.execute {
+                    val stamped = IntruderPhotoTimestampWriter.stamp(
+                        photo = capturedPhoto.file,
+                        capturedAtMillis = capturedPhoto.capturedAtMillis
+                    )
+                    if (!stamped) {
+                        Log.w(
+                            "CameraManager",
+                            "Timestamp failed; preserving raw intruder photo ${capturedPhoto.file.name}"
+                        )
+                    }
+                    mainExecutor.execute { onComplete(capturedPhoto.file) }
+                }
+            }.isSuccess
+
+            if (!submitted) {
+                Log.w("CameraManager", "Timestamp worker unavailable; preserving raw intruder photo")
+                onComplete(capturedPhoto.file)
+            }
         }
 
         timeoutRunnable = Runnable {
@@ -92,15 +129,15 @@ class CameraManager(private val context: Context) {
                     imageCapture
                 )
 
-                takePhoto { file -> finishOnce(file) }
+                takePhoto { capturedPhoto -> finishOnce(capturedPhoto) }
             } catch (error: Exception) {
                 Log.e("CameraManager", "Use case binding failed", error)
                 finishOnce(null)
             }
-        }, ContextCompat.getMainExecutor(context))
+        }, mainExecutor)
     }
 
-    private fun takePhoto(onComplete: (File?) -> Unit) {
+    private fun takePhoto(onComplete: (CapturedPhoto?) -> Unit) {
         val capture = imageCapture ?: run {
             onComplete(null)
             return
@@ -114,10 +151,11 @@ class CameraManager(private val context: Context) {
             onComplete(null)
             return
         }
+        val capturedAtMillis = System.currentTimeMillis()
         val photoFile = File(
             photosDir,
             SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US)
-                .format(System.currentTimeMillis()) + ".jpg"
+                .format(capturedAtMillis) + ".jpg"
         )
 
         val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
@@ -134,7 +172,12 @@ class CameraManager(private val context: Context) {
 
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     Log.d("CameraManager", "Photo capture succeeded: ${photoFile.absolutePath}")
-                    onComplete(photoFile)
+                    onComplete(
+                        CapturedPhoto(
+                            file = photoFile,
+                            capturedAtMillis = capturedAtMillis
+                        )
+                    )
                 }
             }
         )
@@ -142,5 +185,8 @@ class CameraManager(private val context: Context) {
 
     private companion object {
         const val CAPTURE_TIMEOUT_MILLIS = 5_000L
+        val PHOTO_POST_PROCESSOR = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "IntruderPhotoTimestamp").apply { isDaemon = true }
+        }
     }
 }
