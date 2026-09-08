@@ -49,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -97,14 +98,21 @@ fun AppLimitRedesignedSheet(
     onSave: (Int?, Boolean, String, String?, Long?) -> Unit
 ) {
     val editMode = app.currentLimitMinutes != null
-    val now = System.currentTimeMillis()
-    val activeExistingRuleEnd = app.lockUntilTimestamp?.takeIf { it > now }
-    val remainingDays = activeExistingRuleEnd
-        ?.let {
-            ((it - now + TimeUnit.DAYS.toMillis(1) - 1L) / TimeUnit.DAYS.toMillis(1)).toInt()
-        }
-        ?.coerceAtLeast(1)
-        ?: 1
+    val now = remember(app.packageName, app.lockUntilTimestamp) {
+        System.currentTimeMillis()
+    }
+    val activeExistingRuleEnd = remember(app.lockUntilTimestamp, now) {
+        app.lockUntilTimestamp?.takeIf { it > now }
+    }
+    val remainingDays = remember(activeExistingRuleEnd, now) {
+        activeExistingRuleEnd
+            ?.let {
+                ((it - now + TimeUnit.DAYS.toMillis(1) - 1L) /
+                    TimeUnit.DAYS.toMillis(1)).toInt()
+            }
+            ?.coerceAtLeast(1)
+            ?: 1
+    }
 
     var step by remember(app.packageName) { mutableStateOf(AppLimitEditorStep.DETAILS) }
     var dailyMinutes by remember(app.packageName, app.currentLimitMinutes) {
@@ -132,18 +140,22 @@ fun AppLimitRedesignedSheet(
         mutableStateOf(false)
     }
 
-    val enteredMinutes = dailyMinutes.toIntOrNull() ?: 0
-    val enteredDuration = durationAmount.toIntOrNull() ?: 0
-    val calculatedRuleEnd = UsageLimitBehaviorPolicy.calculateRuleEndMillis(
-        nowMillis = now,
-        amount = enteredDuration,
-        unit = durationUnit
-    )
-    val ruleEnd = UsageLimitBehaviorPolicy.resolveRuleEndForEdit(
-        existingRuleEndMillis = activeExistingRuleEnd,
-        durationEdited = durationEdited,
-        calculatedRuleEndMillis = calculatedRuleEnd
-    )
+    val enteredMinutes = remember(dailyMinutes) { dailyMinutes.toIntOrNull() ?: 0 }
+    val enteredDuration = remember(durationAmount) { durationAmount.toIntOrNull() ?: 0 }
+    val calculatedRuleEnd = remember(now, enteredDuration, durationUnit) {
+        UsageLimitBehaviorPolicy.calculateRuleEndMillis(
+            nowMillis = now,
+            amount = enteredDuration,
+            unit = durationUnit
+        )
+    }
+    val ruleEnd = remember(activeExistingRuleEnd, durationEdited, calculatedRuleEnd) {
+        UsageLimitBehaviorPolicy.resolveRuleEndForEdit(
+            existingRuleEndMillis = activeExistingRuleEnd,
+            durationEdited = durationEdited,
+            calculatedRuleEndMillis = calculatedRuleEnd
+        )
+    }
     val canAdvance = enteredMinutes > 0 && enteredDuration > 0 && ruleEnd != null
 
     val pauseLabel = stringResource(R.string.limits_pause_30_option)
@@ -161,6 +173,7 @@ fun AppLimitRedesignedSheet(
         UsageLimitBehaviorPolicy.RuleDurationUnit.WEEKS -> weeksLabel
         UsageLimitBehaviorPolicy.RuleDurationUnit.MONTHS -> monthsLabel
     }
+    val focusManager = LocalFocusManager.current
 
     BackHandler(enabled = step == AppLimitEditorStep.BLOCK_MODE) {
         step = AppLimitEditorStep.DETAILS
@@ -186,7 +199,7 @@ fun AppLimitRedesignedSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 760.dp)
+                .heightIn(min = 560.dp, max = 760.dp)
         ) {
             AppLimitSheetHeader(
                 packageName = app.packageName,
@@ -220,7 +233,14 @@ fun AppLimitRedesignedSheet(
                         onRemove = { onSave(null, false, "NONE", null, null) },
                         onDismiss = onDismiss,
                         canAdvance = canAdvance,
-                        onContinue = { step = AppLimitEditorStep.BLOCK_MODE }
+                        onContinue = {
+                            // Dismissing focus first lets the IME leave before the
+                            // bottom sheet swaps to a materially shorter screen.
+                            // Without this, IME resize + sheet resize compete in the
+                            // same frame and the transition visibly stalls/jumps.
+                            focusManager.clearFocus(force = true)
+                            step = AppLimitEditorStep.BLOCK_MODE
+                        }
                     )
                 }
 
@@ -310,7 +330,7 @@ private fun AppLimitDetailsScreen(
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp)
         ) {
@@ -499,7 +519,7 @@ private fun AppLimitBehaviorScreen(
     Column(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 22.dp, vertical = 20.dp)
         ) {
